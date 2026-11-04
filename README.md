@@ -46,8 +46,8 @@ Entorno de desarrollo: WSL2 con Ubuntu, Python 3.12, NVIDIA RTX 5060 (8 GB, sm_1
 ## Instalación
 
 ```bash
-git clone https://github.com/Ravioks/tesis_FSM_MartinSuarez.git
-cd tesis_FSM_MartinSuarez
+git clone https://github.com/Ravioks/tesis_censo3-gpu.git
+cd tesis_censo3-gpu
 conda create -n censo-gpu python=3.12 -y
 conda activate censo-gpu
 pip install -r requirements.txt
