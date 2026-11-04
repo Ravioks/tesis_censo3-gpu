@@ -2,7 +2,7 @@ import pytest
 
 import barrido as bar
 import censo_3n as c3
-import censo_3n2a as sec
+import censo_3n_ref as sec
 import censo_3n2a_gpu as gpu
 import censo_3n3a_gpu as tri
 from comunes import grafo_etiquetas, grafos_base

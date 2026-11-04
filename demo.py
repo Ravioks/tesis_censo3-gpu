@@ -11,7 +11,7 @@ from datetime import datetime
 
 import numpy as np
 
-import censo_3n2a as sec
+import censo_3n_ref as sec
 
 try:
     from numba import cuda, get_num_threads

@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 
-import censo_3n2a as sec
+import censo_3n_ref as sec
 import censo_3n2a_gpu as gpu
 import censo_3n3a_gpu as tri
 

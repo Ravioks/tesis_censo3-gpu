@@ -30,9 +30,9 @@ Cada triángulo contiene 3 caminos no inducidos (uno centrado en cada vértice) 
 
 ### 1.1 Patrones
 
-**Camino:** `(etiqueta del centro, rama₁, rama₂)` con cada rama = `(etiqueta de la arista, etiqueta del nodo extremo)` y las ramas ordenadas (`censo_3n2a.clave_patron`). Ordenarlas hace que `A–C–B` y `B–C–A` den la misma clave.
+**Camino:** `(etiqueta del centro, rama₁, rama₂)` con cada rama = `(etiqueta de la arista, etiqueta del nodo extremo)` y las ramas ordenadas (`censo_3n_ref.clave_patron`). Ordenarlas hace que `A–C–B` y `B–C–A` den la misma clave.
 
-**Triángulo:** multiconjunto ordenado de los pares `(arista opuesta, nodo)` (`censo_3n2a.clave_triangulo`). Cada nodo se empareja con la arista que no lo toca. Una permutación de los nodos mueve los pares completos, así que el multiconjunto no cambia. Y desde los tres pares se reconstruye el triángulo: la arista entre los nodos i y j es la opuesta del tercero. Entonces dos triángulos tienen la misma clave si y solo si son isomorfos con etiquetas.
+**Triángulo:** multiconjunto ordenado de los pares `(arista opuesta, nodo)` (`censo_3n_ref.clave_triangulo`). Cada nodo se empareja con la arista que no lo toca. Una permutación de los nodos mueve los pares completos, así que el multiconjunto no cambia. Y desde los tres pares se reconstruye el triángulo: la arista entre los nodos i y j es la opuesta del tercero. Entonces dos triángulos tienen la misma clave si y solo si son isomorfos con etiquetas.
 
 ### 1.2 Resta a partir del censo de triángulos
 
@@ -41,7 +41,7 @@ Sea un triángulo con pares (e₀, n₀), (e₁, n₁), (e₂, n₂). El camino 
 - hacia el nodo 1, por la arista 0–1, que es la opuesta del nodo 2: rama (e₂, n₁);
 - hacia el nodo 2, por la arista 0–2, que es la opuesta del nodo 1: rama (e₁, n₂).
 
-Su patrón es `(n₀; (e₂, n₁), (e₁, n₂))`. Lo mismo vale para los nodos 1 y 2. `censo_3n2a.resta_desde_triangulos` recorre los patrones de triángulo, suma su frecuencia a esos tres patrones de camino y devuelve la resta. Cuesta O(patrones de triángulo), no O(T).
+Su patrón es `(n₀; (e₂, n₁), (e₁, n₂))`. Lo mismo vale para los nodos 1 y 2. `censo_3n_ref.resta_desde_triangulos` recorre los patrones de triángulo, suma su frecuencia a esos tres patrones de camino y devuelve la resta. Cuesta O(patrones de triángulo), no O(T).
 
 Ejemplo: un triángulo con nodos `C`, `C`, `O`, arista `d` entre los dos `C`, y aristas `s` desde cada `C` al `O`.
 
@@ -53,7 +53,7 @@ Ejemplo: un triángulo con nodos `C`, `C`, `O`, arista `d` entre los dos `C`, y 
 
 Clave: `((d, O), (s, C), (s, C))`. Resta: centrado en O, `(O; (s, C), (s, C))`; centrado en cada C, `(C; (d, C), (s, O))`, dos veces.
 
-`tests/test_oraculo.py` comprueba en 40 grafos aleatorios que esta resta es idéntica a la calculada camino por camino (`censo_3n2a.censo_triangulos`).
+`tests/test_oraculo.py` comprueba en 40 grafos aleatorios que esta resta es idéntica a la calculada camino por camino (`censo_3n_ref.censo_triangulos`).
 
 ---
 
@@ -61,7 +61,7 @@ Clave: `((d, O), (s, C), (s, C))`. Resta: centrado en O, `(O; (s, C), (s, C))`; 
 
 | Archivo | Funciones |
 |---|---|
-| `censo_3n2a.py` | `Grafo`; `censo_centro`, `censo_exploracion` (caminos); `censo_triangulos` (triángulos + resta directa); `resta_desde_triangulos`; `censo_inducido`; `censo_completo` (oráculo); generadores `generar_*`; `cargar_gspan`; `estadisticas`, `aplanar`, `seg_est` (medición) |
+| `censo_3n_ref.py` | `Grafo`; `censo_centro`, `censo_exploracion` (caminos); `censo_triangulos` (triángulos + resta directa); `resta_desde_triangulos`; `censo_inducido`; `censo_completo` (oráculo); generadores `generar_*`; `cargar_gspan`; `estadisticas`, `aplanar`, `seg_est` (medición) |
 | `censo_3n2a_gpu.py` | `CSR`, `grafo_a_csr`, `csr_desde_aristas`, `cargar_npz`/`guardar_npz`; `preparar`; funciones de dispositivo `id_patron`, `insertar_hash`, `volcar`, `iniciar_shared`, `vaciar_shared`, `desrankear`; `_fabricar_kernels` y `kernels(memoria)`; scan en GPU (`_k_scan_bloque`, `_k_sumar_bloques`, `scan_inclusivo`, `prefijo_exclusivo`); `subir_grafo`, `fila_en_gpu`, `buscar_cortes`; `motivo_memoria`, `motivo_invalida`, `memoria_por_defecto`; `lotes`; `ejecutar_gpu`; `medir_gpu`; `verificar_ids` |
 | `censo_3n3a_gpu.py` | `orientar` (`_orientar`, `_costos`) en CPU; `orientar_gpu` (`_k_contar_salida`, `_k_llenar_orientado`, `_k_costos`, `_k_costos_binaria`), `asegurar_binaria`, `subir_orientacion`; `id_triangulo`, `acumular`, `mezclar`, `buscar`; `_fabricar_kernels` y `kernels(memoria)`; `motivo_invalida`; `lotes`; `ejecutar_triangulos_gpu`; `decodificar_triangulos` |
 | `censo_3n.py` | `preparar`; `resolver_config`, `completar_memorias`, `cargar_config`; `preparar_dispositivo`; `censo3`; `estadisticas_corridas`; `invariantes`; `a_dataframe`; argumentos comunes (`agregar_args_grafo`, `agregar_args_config`, `cargar_grafo`) |
@@ -318,7 +318,7 @@ La referencia por defecto es `censo3_njit` multihilo: código independiente de l
 ## 9. Medición
 
 - **Reloj:** `time.perf_counter`, con `cuda.synchronize()` al final de cada fase de GPU.
-- **Estadístico:** media ± desviación estándar en todos los scripts y para CPU y GPU por igual (`censo_3n2a.estadisticas`). El mínimo queda en los JSON y CSV (`aplanar` genera `*_s`, `*_desv_s`, `*_min_s`).
+- **Estadístico:** media ± desviación estándar en todos los scripts y para CPU y GPU por igual (`censo_3n_ref.estadisticas`). El mínimo queda en los JSON y CSV (`aplanar` genera `*_s`, `*_desv_s`, `*_min_s`).
 - **Calentamiento:** la primera ejecución de cada configuración se descarta. En los JSON, `t_jit_s` es el exceso de esa primera ejecución sobre la media.
 - **Preparación:** se mide en cada repetición en `censo_3n.py`, `censo_3n_cpu_njit.py` y la demo. En el barrido se hace una vez y se informa aparte.
 - **Aceleraciones:** cociente de medias del censo. En `censo_3n_cpu_njit.py` y en la demo, contra el njit más rápido de 1 hilo y el más rápido multihilo.

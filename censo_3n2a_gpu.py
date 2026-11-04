@@ -7,7 +7,7 @@ import time
 import numpy as np
 from numba import cuda, int32, int64, njit
 
-import censo_3n2a as sec
+import censo_3n_ref as sec
 
 VACIO = -1
 BINS_SHARED = 2048

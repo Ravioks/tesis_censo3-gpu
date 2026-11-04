@@ -24,13 +24,13 @@ La documentación técnica (algoritmos, kernels y funciones) está en [`docs/FUN
 | `demo.py` | Corre los experimentos (validación, barrido, CPU vs GPU, escalabilidad, grafo real) y genera el informe |
 | `censo_3n2a_gpu.py` | Caminos en GPU: CSR, 4 estrategias × 3 modos de memoria, verificación camino por camino |
 | `censo_3n3a_gpu.py` | Triángulos en GPU: orientación por grado y 3 estrategias de intersección × 3 modos de memoria |
-| `censo_3n2a.py` | Referencia secuencial en Python (oráculo), generadores de grafos chicos, lector gSpan y utilidades |
+| `censo_3n_ref.py` | Referencia secuencial en Python (oráculo), generadores de grafos chicos, lector gSpan y utilidades |
 | `generadores.py` | Generadores rápidos (NumPy/Numba) que arman el CSR directo, para grafos de millones de aristas |
 | `datos_reales.py` | Descarga grafos de SNAP, los limpia, les asigna etiquetas y los guarda en caché |
 | `tests/` | Tests con pytest: fuerza bruta → oráculo → njit → GPU, más compilación a PTX |
 | `docs/` | Documentación técnica, historial de cambios y resultados guardados |
 
-Los nombres siguen la forma del subgrafo: `3n2a` = 3 nodos y 2 aristas (caminos), `3n3a` = 3 nodos y 3 aristas (triángulos), `3n` = censo completo.
+Los nombres siguen la forma del subgrafo: `3n2a` = 3 nodos y 2 aristas (caminos), `3n3a` = 3 nodos y 3 aristas (triángulos), `3n` = censo completo. El sufijo indica la implementación: `_gpu`, `_cpu_njit` y `_ref` (referencia Python).
 
 ## Requisitos
 
@@ -97,7 +97,7 @@ python demo.py --rapido
 | `censo_3n_cpu_njit.py` | Medir la CPU compilada (1 hilo y multihilo, enumeración y combinatoria) y compararla con la GPU |
 | `demo.py` | Correr los experimentos completos y generar `resumen.md`, `resultados.json` y figuras |
 | `censo_3n2a_gpu.py` | Solo caminos: estrategias × memorias contra la referencia Python, y verificación camino por camino de los IDs |
-| `censo_3n2a.py` | Referencia Python: exploración contra centro, memoria, dibujo del grafo, soporte por transacción (gSpan) |
+| `censo_3n_ref.py` | Referencia Python: exploración contra centro, memoria, dibujo del grafo, soporte por transacción (gSpan) |
 | `python -m pytest -q tests` | Verificación automática |
 
 ### Grafo de entrada (común a todos)
@@ -201,15 +201,15 @@ python demo.py --dataset orkut
 
 Cada ejecución crea `resultados/demo_<fecha>_<hora>/` con `resumen.md` (todas las tablas), `resultados.json` (todos los datos), `cpu_vs_gpu.png`, `escalabilidad_tamano.png`, `escalabilidad_densidad.png`, `escalabilidad_etiquetas.png` y los `mejor_config_*.json`. Si un experimento falla, se registra el error y la demo sigue.
 
-### `censo_3n2a_gpu.py` y `censo_3n2a.py`
+### `censo_3n2a_gpu.py` y `censo_3n_ref.py`
 
 ```bash
 python censo_3n2a_gpu.py --grafo ba --n 50000 --k 3 --reps 3 --verificar-ids
-python censo_3n2a.py --grafo ba --n 20000 --k 3 --comparar --memoria
-python censo_3n2a.py --archivo ejemplos/moleculas.txt --dibujar
+python censo_3n_ref.py --grafo ba --n 20000 --k 3 --comparar --memoria
+python censo_3n_ref.py --archivo ejemplos/moleculas.txt --dibujar
 ```
 
-`censo_3n2a_gpu.py` mide solo caminos no inducidos: todas las estrategias × memorias (`--estrategia`, `--memoria`) contra los dos métodos de Python, y con `--verificar-ids` comprueba que la GPU cuenta exactamente los mismos caminos que la CPU, sin duplicados. `censo_3n2a.py` es la referencia secuencial; `--sin-triangulos` omite triángulos e inducido.
+`censo_3n2a_gpu.py` mide solo caminos no inducidos: todas las estrategias × memorias (`--estrategia`, `--memoria`) contra los dos métodos de Python, y con `--verificar-ids` comprueba que la GPU cuenta exactamente los mismos caminos que la CPU, sin duplicados. `censo_3n_ref.py` es la referencia secuencial; `--sin-triangulos` omite triángulos e inducido.
 
 ### Desde Python
 

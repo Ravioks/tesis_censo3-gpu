@@ -3,7 +3,7 @@ from math import comb
 
 import pytest
 
-import censo_3n2a as sec
+import censo_3n_ref as sec
 from comunes import MOLECULAS, aleatorio, grafos_base
 from fuerza_bruta import censo_fuerza_bruta
 

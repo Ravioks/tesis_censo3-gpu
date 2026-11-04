@@ -1,5 +1,9 @@
 # Historial de cambios
 
+## Renombre del módulo de referencia (4-nov-2026)
+
+- `censo_3n2a.py` pasa a llamarse `censo_3n_ref.py`. Por la convención, el nombre anterior sugería solo caminos, pero el módulo contiene el oráculo del censo completo (caminos, triángulos e inducido) y las utilidades comunes. Las entradas anteriores conservan el nombre viejo.
+
 ## Versión 3.1: preparación en GPU y grafo residente (4-nov-2026)
 
 Primera corrida de v3 en la RTX 5060: los 225 tests pasaron y LiveJournal dio T = 177.820.130, igual a SNAP y a la CPU compilada. Esa corrida mostró dos problemas de medición, que esta versión corrige.

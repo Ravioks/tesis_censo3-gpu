@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 import censo_3n as c3
-import censo_3n2a as sec
+import censo_3n_ref as sec
 import censo_3n2a_gpu as gpu
 import censo_3n_cpu_njit as cpu
 from comunes import aleatorio, grafo_etiquetas, grafos_base

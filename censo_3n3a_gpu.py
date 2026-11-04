@@ -4,7 +4,7 @@ import time
 import numpy as np
 from numba import cuda, int64, njit
 
-import censo_3n2a as sec
+import censo_3n_ref as sec
 import censo_3n2a_gpu as gpu
 
 BINS_SHARED = gpu.BINS_SHARED

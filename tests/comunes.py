@@ -1,7 +1,7 @@
 import os
 import random
 
-import censo_3n2a as sec
+import censo_3n_ref as sec
 from generadores import grafo_etiquetas
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
