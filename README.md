@@ -1,258 +1,357 @@
-# Censo de subgrafos de 3 nodos y 2 aristas en CPU y GPU
+# Censo etiquetado de 3 nodos en GPU
 
-Prototipo de tesis sobre minería de subgrafos frecuentes (FSM) acelerada en GPU.
+Herramienta de tesis para contar, en un grafo grande no dirigido con etiquetas en nodos y aristas, **todos los subgrafos conexos de 3 nodos**, agrupados por patrón de etiquetas. Corre en GPU NVIDIA con kernels CUDA escritos en Python (Numba) sobre el grafo en **CSR**, el mismo formato de adyacencia que usa RAPIDS cuGraph.
 
-El programa cuenta todos los subgrafos conexos de 3 nodos y 2 aristas de un grafo etiquetado no dirigido. Esos subgrafos son siempre caminos `a – c – b`. Luego los agrupa por patrón de etiquetas, con **conteo no inducido**.
+Hay dos formas posibles de 3 nodos: **caminos** `a – c – b` (2 aristas) y **triángulos** (3 aristas). Por cada patrón se entregan tres censos:
 
-El repositorio incluye:
+| Censo | Qué cuenta |
+|---|---|
+| Caminos **no inducidos** | Todo camino `a – c – b`, aunque `a` y `b` también estén unidos |
+| Caminos **inducidos** | Solo los tríos cuyo subgrafo inducido es exactamente un camino (sin la arista `a – b`) |
+| **Triángulos** | Cada trío de nodos mutuamente unidos. Es igual en ambas convenciones |
 
-- una versión secuencial en Python, que sirve como referencia,
-- una versión paralela en CUDA (Numba) que trabaja sobre el grafo en formato CSR,
-- una demo que ejecuta varios experimentos y compara ambas versiones, incluido un grafo real de millones de nodos.
+Cada triángulo contiene 3 caminos no inducidos, así que el inducido se obtiene **restando, patrón por patrón**, los caminos que están dentro de triángulos. En total: caminos inducidos = W − 3T, con W = Σ C(grado, 2) y T = número de triángulos.
+
+La documentación técnica (algoritmos, kernels y funciones) está en [`docs/FUNCIONAMIENTO.md`](docs/FUNCIONAMIENTO.md). Los cambios de cada versión están en [`docs/CAMBIOS.md`](docs/CAMBIOS.md).
 
 ## Contenido
 
-| Archivo | Descripción |
+| Archivo | Para qué sirve |
 |---|---|
-| `demo.py` | Demo completa: un solo comando ejecuta todos los experimentos y genera el informe |
-| `censo_3n2a.py` | Versión secuencial (CPU) con dos estrategias: exploración y centro. Incluye generadores de grafos, lectura de archivos gSpan y dibujo |
-| `censo_3n2a_gpu.py` | Versión paralela (GPU) sobre CSR: 3 kernels × 3 modos de conteo, con verificación contra la CPU |
-| `datos_reales.py` | Descarga grafos de SNAP, los convierte a CSR, les asigna etiquetas y los guarda en caché |
-| `requirements.txt` | Dependencias de Python. `numba-cuda` se instala aparte, según tu driver |
+| `censo_3n.py` | **Punto de entrada principal.** Censo completo en GPU: API `censo3()` y línea de comandos |
+| `barrido.py` | **Compara configuraciones GPU** (estrategia × memoria × tamaño de bloque), valida cada una y guarda la mejor en `mejor_config.json` |
+| `censo_3n_cpu_njit.py` | Baseline de CPU compilada (Numba `njit`), 1 hilo y multihilo, con la misma codificación que la GPU |
+| `demo.py` | Corre los experimentos (validación, barrido, CPU vs GPU, escalabilidad, grafo real) y genera el informe |
+| `censo_3n2a_gpu.py` | Caminos en GPU: CSR, 4 estrategias × 3 modos de memoria, verificación camino por camino |
+| `censo_3n3a_gpu.py` | Triángulos en GPU: orientación por grado y 3 estrategias de intersección × 3 modos de memoria |
+| `censo_3n2a.py` | Referencia secuencial en Python (oráculo), generadores de grafos chicos, lector gSpan y utilidades |
+| `generadores.py` | Generadores rápidos (NumPy/Numba) que arman el CSR directo, para grafos de millones de aristas |
+| `datos_reales.py` | Descarga grafos de SNAP, los limpia, les asigna etiquetas y los guarda en caché |
+| `tests/` | Tests con pytest: fuerza bruta → oráculo → njit → GPU, más compilación a PTX |
+| `docs/` | Documentación técnica, historial de cambios y resultados guardados |
+
+Los nombres siguen la forma del subgrafo: `3n2a` = 3 nodos y 2 aristas (caminos), `3n3a` = 3 nodos y 3 aristas (triángulos), `3n` = censo completo.
 
 ## Requisitos
 
-- **GPU NVIDIA con soporte CUDA** para la parte paralela. Sin GPU, la demo ejecuta solo la parte de CPU.
+- **GPU NVIDIA con CUDA** para la parte paralela. Sin GPU funcionan la referencia Python, el baseline njit, los tests de CPU y la compilación a PTX.
 - **Driver NVIDIA reciente.** En WSL2 el driver se instala en Windows, no dentro de Linux.
 - **Python 3.10 a 3.13.**
-- **Memoria para el grafo real por defecto (LiveJournal):** unos 8 GB de RAM, ~1 GB de memoria de GPU y ~1 GB de disco para la descarga y la caché.
-- **Para Orkut** (opcional, 3,5 veces más grande): se recomiendan 16 GB de RAM y ~3 GB de memoria de GPU.
+- **numpy < 2.5:** `numba-cuda` 0.30 usa `np.row_stack`, que numpy 2.5 eliminó. Ya está fijado en `requirements.txt`.
+- **Memoria para LiveJournal:** funcionó con los 7,7 GB de RAM que WSL2 asigna por defecto. En GPU usa alrededor de 1 GB; en disco, ~1 GB entre descarga y caché.
+- **Orkut** (opcional, 3,5 veces más grande): se recomiendan 16 GB de RAM y ~3 GB de memoria de GPU.
 
-Entorno donde se desarrolló y probó: WSL2 con Ubuntu, Python 3.13, NVIDIA RTX 5060 (8 GB) y driver 610.57 (CUDA 13.3).
+Entorno de desarrollo: WSL2 con Ubuntu, Python 3.12, NVIDIA RTX 5060 (8 GB, sm_120), driver 610.57 (CUDA 13.3).
 
 ## Instalación
 
-### 1. Clonar el repositorio
-
 ```bash
-git clone https://github.com/<usuario>/<repositorio>.git
-cd <repositorio>
-```
-
-### 2. Crear un entorno e instalar las dependencias
-
-Con conda o mamba (recomendado):
-
-```bash
+git clone https://github.com/Ravioks/tesis_FSM_MartinSuarez.git
+cd tesis_FSM_MartinSuarez
 conda create -n censo-gpu python=3.12 -y
 conda activate censo-gpu
 pip install -r requirements.txt
-```
-
-También funciona con `venv`:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Instalar `numba-cuda` según la versión de CUDA del driver
-
-Primero mira la versión que muestra `nvidia-smi`, arriba a la derecha (`CUDA Version`):
-
-```bash
-nvidia-smi
-```
-
-Luego instala el paquete que corresponda:
-
-```bash
-pip install "numba-cuda[cu12]"
-```
-
-Usa el comando anterior si tu driver muestra CUDA 12.x, y este si muestra CUDA 13.x:
-
-```bash
 pip install "numba-cuda[cu13]"
 ```
 
-Estos paquetes traen las librerías de CUDA que Numba necesita, así que no hace falta instalar el CUDA Toolkit completo. Las GPUs de la serie RTX 50 necesitan un driver con CUDA 12.8 o superior.
+Usa `[cu12]` en vez de `[cu13]` si `nvidia-smi` muestra CUDA 12.x. Estos paquetes traen las librerías de CUDA que necesita Numba, así que no hace falta instalar el CUDA Toolkit.
 
-Si ya tienes un entorno de RAPIDS, `numba-cuda` viene incluido. En ese caso basta con `pip install -r requirements.txt`.
+Si ya tienes el entorno `censo-gpu` funcionando, no lo recrees: basta con `pip install -r requirements.txt`, que no actualiza `numba-cuda`.
 
-### 4. Verificar que Numba ve la GPU
+Comprueba que Numba ve la GPU:
 
 ```bash
 python -c "from numba import cuda; print(cuda.is_available()); cuda.detect()"
 ```
 
-Debe imprimir `True` y listar la GPU.
-
-## Ejecutar la demo
+## Inicio rápido
 
 ```bash
-python demo.py
+python -m pytest -q tests
+python censo_3n.py --grafo ejemplo --verificar
+python barrido.py --grafo ba --generador numpy --n 1000000 --k 8
+python censo_3n.py --grafo ba --generador numpy --n 1000000 --k 8 --config resultados/barrido_<grafo>_<fecha>/mejor_config.json --verificar-njit
+python demo.py --rapido
 ```
 
-La primera vez descarga el grafo de LiveJournal desde SNAP y lo guarda en caché en `datasets/`. Las siguientes ejecuciones lo cargan en segundos.
+1. Los tests validan todo el código: oráculo contra fuerza bruta, CPU, GPU y compilación de cada kernel.
+2. El censo del grafo de ejemplo se compara contra la referencia Python.
+3. El barrido mide todas las configuraciones en un grafo de un millón de nodos y guarda la mejor.
+4. El censo completo usa esa configuración y se compara contra la CPU compilada.
+5. La demo rápida corre todos los experimentos en grafos medianos.
 
-El tiempo total depende de la máquina. Una estimación es de unos 5 a 10 minutos, más la descarga inicial. La mayor parte del tiempo se va en la versión de CPU en Python y en leer el grafo real la primera vez.
+## Qué se calcula
 
-### Opciones
+**Patrón de un camino:** la etiqueta del centro y las dos ramas (etiqueta de la arista, etiqueta del nodo extremo), con las ramas ordenadas, porque `A–C–B` y `B–C–A` son el mismo camino. En pantalla: `O -[d]- C -[s]- C`, con el centro al medio.
+
+**Patrón de un triángulo:** el multiconjunto de pares (arista opuesta, nodo). Cada nodo se empareja con la arista que no lo toca. Ese multiconjunto no cambia al permutar los nodos y determina el triángulo completo. En pantalla: `C -[s]- C -[s]- N -[d]- C`.
+
+**Inducido.** El patrón de cada uno de los 3 caminos de un triángulo queda determinado por el patrón del triángulo. Por eso la resta se calcula en CPU a partir del censo de triángulos (`resta_desde_triangulos`), y la GPU solo cuenta triángulos. Los tests comprueban que esa resta coincide con la que se obtiene camino por camino.
+
+## Modos de ejecución
+
+| Comando | Para qué |
+|---|---|
+| `censo_3n.py` | Censo completo de un grafo con una configuración GPU: tiempos, verificación, top de patrones, JSON y CSV |
+| `barrido.py` | Elegir la mejor configuración GPU para un grafo; cada configuración se valida contra una referencia |
+| `censo_3n_cpu_njit.py` | Medir la CPU compilada (1 hilo y multihilo, enumeración y combinatoria) y compararla con la GPU |
+| `demo.py` | Correr los experimentos completos y generar `resumen.md`, `resultados.json` y figuras |
+| `censo_3n2a_gpu.py` | Solo caminos: estrategias × memorias contra la referencia Python, y verificación camino por camino de los IDs |
+| `censo_3n2a.py` | Referencia Python: exploración contra centro, memoria, dibujo del grafo, soporte por transacción (gSpan) |
+| `python -m pytest -q tests` | Verificación automática |
+
+### Grafo de entrada (común a todos)
+
+| Opción | Grafo |
+|---|---|
+| `--grafo ejemplo` / `triangulo` | Grafos fijos de prueba |
+| `--grafo estrella --n N` | Un centro y N − 1 hojas: el caso extremo de hub |
+| `--grafo completo --n N` | K_N con etiquetas al azar |
+| `--grafo aleatorio --n N --m M` | Erdős–Rényi G(N, M) |
+| `--grafo ba --n N --k K` | Barabási–Albert: libre de escala, con hubs |
+| `--generador numpy` | Con `ba`, `aleatorio` o `completo`: arma el CSR directo con NumPy/Numba. Necesario sobre ~10⁵ aristas; el generador `python` construye diccionarios y es lento a esa escala |
+| `--archivo ruta.txt` | Archivo gSpan (`t` / `v` / `e`) |
+| `--csr grafo.npz` | CSR guardado (`offsets`, `indices`, `etiqueta_nodo`, `etiqueta_arista`) |
+| `--dataset livejournal` | Grafo de SNAP (`livejournal`, `orkut`, `twitter`), con caché en `--datos` |
+| `--etiquetas-nodo L --etiquetas-arista E --semilla S` | Etiquetas al azar uniformes (por defecto 3 × 2 en sintéticos y 5 × 2 en SNAP) |
+
+Los dos generadores producen grafos distintos para la misma semilla. El BA de `numpy` muestrea los destinos con reemplazo y descarta las aristas repetidas, así que cada nodo nuevo queda con *hasta* k aristas.
+
+### `censo_3n.py`: censo completo en GPU
+
+```bash
+python censo_3n.py --grafo ba --generador numpy --n 1000000 --k 8 --verificar-njit --json --csv
+python censo_3n.py --dataset livejournal --config mejor_config.json --verificar-njit
+python censo_3n.py --grafo aleatorio --n 2000 --m 20000 --estrategia-caminos combinatorio --estrategia-tri binaria --verificar
+```
 
 | Opción | Efecto |
 |---|---|
-| `--rapido` | Grafos más chicos y sin grafo real. Sirve para comprobar que todo funciona en unos 2 minutos |
-| `--dataset livejournal` / `orkut` / `twitter` / `ninguno` | Grafo real para la parte solo GPU. Por defecto `livejournal` |
-| `--sin-gpu` | Ejecuta solo la parte de CPU |
-| `--reps N` | Repeticiones por medición (por defecto 3) |
-| `--etiquetas-nodo N`, `--etiquetas-arista N` | Etiquetas sintéticas del grafo real (por defecto 5 y 2) |
-| `--trabajo-por-lanzamiento N` | Máximo de caminos por lanzamiento de kernel (por defecto 1.000.000.000) |
-| `--salida`, `--datos` | Carpetas de resultados y de datasets |
+| `--estrategia-caminos` | `nodo`, `entrada` (por defecto), `balanceado`, `combinatorio` |
+| `--memoria-caminos` | `global`, `shared`, `hash`. Por defecto, el primer modo válido en ese orden |
+| `--estrategia-tri` | `arista` (por defecto), `binaria`, `balanceado` |
+| `--memoria-tri` | Igual que para caminos |
+| `--bloque-caminos`, `--bloque-tri` | Hilos por bloque (256 por defecto) |
+| `--chunk`, `--chunk-tri` | Trabajo por ítem en las estrategias `balanceado` (64 caminos; 256 unidades de costo) |
+| `--preproceso` | `gpu` (por defecto): el grafo se copia a la GPU y la orientación y el arreglo `fila` se construyen allá. `cpu`: se construyen en CPU y se copian |
+| `--config archivo.json` | Configuración de `barrido.py`. Las opciones explícitas tienen prioridad sobre el archivo |
+| `--reps N` | Repeticiones medidas, tras una de calentamiento |
+| `--verificar` | Compara contra la referencia Python, hasta 20 M de caminos (`--forzar-python` para más) |
+| `--verificar-njit` | Compara contra la CPU compilada |
+| `--json`, `--csv` | Exporta configuración, tiempos, verificación y censos; el CSV tiene `tipo, patron, no_inducido, inducido` |
 
-Ejemplos:
+En LiveJournal y Orkut compara además T contra el número de triángulos que publica SNAP.
+
+### `barrido.py`: comparar configuraciones
 
 ```bash
-python demo.py --rapido
-python demo.py --dataset orkut
-python demo.py --sin-gpu
+python barrido.py --grafo ba --generador numpy --n 1000000 --k 8 --bloques 128 256 512
+python barrido.py --dataset livejournal --reps 3
+python barrido.py --grafo completo --generador numpy --n 1000 --parte triangulos --estrategias-tri arista binaria
 ```
 
-### Archivos generados
+El grafo se copia a la GPU y se preprocesa **una sola vez** (`--preproceso gpu` o `cpu`), y todas las configuraciones lo comparten. Así, cada una mide solo lo propio: reservar su histograma o tabla, su kernel y la lectura del resultado. El tiempo de esa preparación compartida se informa aparte.
 
-Cada ejecución crea una carpeta `resultados/demo_<fecha>_<hora>/` con:
+Mide cada combinación de estrategia × memoria × bloque: una ejecución de calentamiento (incluye la compilación JIT) y `--reps` medidas. Valida cada configuración contra la referencia (`--referencia njit`, por defecto; `python` en grafos chicos; `ninguna` compara las configuraciones entre sí). Omite y explica las configuraciones que no aplican: memoria insuficiente, demasiados patrones para el modo, o un hub que dejaría a un hilo con demasiado trabajo.
 
-- `resumen.md`: el informe completo con todas las tablas.
-- `resultados.json`: todos los datos medidos, para analizarlos después.
-- `cpu_vs_gpu.png`: gráfico de tiempos CPU vs GPU en escala logarítmica.
+Elige la mejor configuración correcta por tiempo total medio (`--criterio total`) o solo de cálculo (`--criterio calculo`). Después corre el censo completo con ella y lo verifica (`--sin-completo` lo omite).
 
-## Qué hace la demo
+Guarda en `resultados/barrido_<grafo>_<fecha>/`:
 
-0. **Entorno.** Muestra las versiones de Python y las librerías, la CPU, la RAM y la GPU detectada.
-1. **Validación de correctitud.** Cuenta grafos chicos con los 2 métodos de CPU y las 9 configuraciones de GPU, y comprueba que todos los censos sean idénticos. Además, la GPU emite el identificador de cada camino (el par de IDs de sus dos aristas) y se verifica que el conjunto sea igual al de la CPU, sin duplicados.
-2. **Estrategias secuenciales.** Compara exploración contra centro en tiempo, memoria y trabajo descartado.
-3. **CPU vs GPU sobre el mismo grafo.** Usa un grafo libre de escala (Barabási–Albert), uno aleatorio denso y uno completo. Muestra la tabla de las 9 configuraciones GPU y la aceleración contra el mejor método de CPU.
-4. **GPU a gran escala.** Grafo completo de 1000 nodos (498.501.000 caminos). El tiempo de CPU se estima con el rendimiento medido en el experimento 3.
-5. **Grafo real masivo (solo GPU).** com-LiveJournal de SNAP: 3.997.962 nodos y 34.681.189 aristas. El tiempo de CPU se estima.
-6. **Resumen.** Tabla consolidada y gráfico.
-
-## Cómo funciona
-
-### El problema
-
-Todo subgrafo conexo de 3 nodos y 2 aristas es un camino `a – c – b`, con un nodo central `c`. El patrón se identifica por la etiqueta del centro y sus dos ramas. Cada rama es la etiqueta de la arista más la del nodo extremo. Las ramas se ordenan, así que `A–C–B` y `B–C–A` son el mismo patrón.
-
-En pantalla, un patrón se escribe así:
-
-```
-O -[d]- C -[s]- C
-```
-
-Las mayúsculas son etiquetas de nodo, las minúsculas entre corchetes son etiquetas de arista, y el centro va en el medio.
-
-El total de caminos siempre debe ser `Σ C(grado, 2)` sobre todos los nodos, y ambos programas lo verifican en cada ejecución.
-
-**Conteo no inducido:** un camino cuenta aunque sus extremos también estén unidos, así que un triángulo aporta 3 caminos. El conteo inducido se obtiene restando 3 × (número de triángulos).
-
-### Estrategias secuenciales (`censo_3n2a.py`)
-
-- **Exploración.** Recorre desde cada nodo, da un paso por una arista y luego otro. Así encuentra cada camino 4 veces. Para no contarlo de más, guarda el ID de cada camino ya visto en un conjunto hash y descarta los repetidos. Siempre descarta el 75% de lo que genera, y la memoria crece con el número de caminos.
-- **Centro.** Cada camino tiene un único nodo central. Cada nodo forma los pares `(i, j)` de sus vecinos con `i < j`, de modo que cada camino aparece exactamente una vez. No necesita recordar lo visto y su memoria es constante.
-
-### Versión paralela (`censo_3n2a_gpu.py`)
-
-Usa la regla del centro, que no necesita estructuras compartidas entre hilos. Recibe el grafo en CSR: `offsets`, `indices` y etiquetas como enteros. Cada patrón se codifica como un entero único, sin colisiones.
-
-**Kernels** (cómo se reparte el trabajo):
-
-| Kernel | Cada hilo procesa | Comentario |
-|---|---|---|
-| `nodo` | Un nodo y todos sus pares de vecinos | Simple, pero un hub deja a un hilo con casi todo el trabajo |
-| `entrada` | Una entrada del CSR (un vecino `i` y todos los `j > i`) | Reparto más fino |
-| `balanceado` | Un bloque fijo de 64 caminos, ubicado con prefix sum, búsqueda binaria y "desrankeo" del par inicial | Balance casi perfecto |
-
-**Modos de conteo:**
-
-- `global`: un histograma en memoria global, con sumas atómicas.
-- `shared`: un histograma por bloque en memoria compartida, que se vuelca al final. Solo se usa si hay como máximo 2048 patrones posibles.
-- `hash`: una tabla hash en GPU con `atomicCAS`. Sirve para cualquier número de etiquetas.
-
-En los tres modos, cada hilo agrupa los patrones repetidos consecutivos antes de la operación atómica.
-
-**Lanzamientos por lotes.** El trabajo se divide en varios lanzamientos de kernel de hasta 1.000 millones de caminos cada uno. En GPUs que también controlan la pantalla, sobre todo en Windows y WSL2, el driver puede abortar los kernels muy largos (TDR).
-
-### Métricas de la tabla GPU
-
-| Columna | Significado |
+| Archivo | Contenido |
 |---|---|
-| Hilos | Hilos lanzados (bloques × hilos por bloque) |
-| Lanz. | Número de lanzamientos de kernel |
-| H2D | Copia de datos a la GPU y reserva de memoria |
-| Kernel (cálculo) | El conteo en sí |
-| D2H | Traer los resultados y traducir los enteros a patrones con etiquetas |
-| Total | H2D + cálculo + D2H. No incluye la compilación JIT, que se paga en la ejecución de calentamiento |
-| Desbal | Trabajo del hilo más cargado / trabajo promedio por hilo. 1,00 = reparto perfecto. Es un modelo analítico que cuenta también los hilos sin trabajo |
-| OK | El censo coincide con la referencia y el total es `Σ C(grado, 2)` |
+| `barrido.csv` | Una fila por configuración: tiempos (media, desviación y mínimo por fase), hilos, lanzamientos, desbalance, si es correcta o por qué se omitió |
+| `barrido.json` | Lo mismo, más grafo, opciones, referencia, tiempos de la preparación compartida y censo completo |
+| `mejor_config.json` | La mejor configuración, lista para `censo_3n.py --config` y `censo_3n_cpu_njit.py --config` |
 
-Criterio de medición: la CPU usa el mejor de N repeticiones y la GPU el promedio de N tras una ejecución de calentamiento. Ese criterio no favorece a la GPU.
-
-## Uso individual de los programas
-
-Versión secuencial:
+### `censo_3n_cpu_njit.py`: baseline de CPU compilada
 
 ```bash
-python censo_3n2a.py --grafo ba --n 20000 --k 3 --comparar --memoria
-python censo_3n2a.py --grafo ejemplo --dibujar --json
-python censo_3n2a.py --archivo ejemplos/moleculas.txt --dibujar
+python censo_3n_cpu_njit.py --grafo ba --generador numpy --n 1000000 --k 8 --gpu --config mejor_config.json
+python censo_3n_cpu_njit.py --dataset livejournal --modo paralelo --gpu --json
 ```
 
-Versión GPU:
+Mide el censo completo con `njit` en 1 hilo (`--modo serial`), multihilo (`--modo paralelo`) o ambos. Los caminos se cuentan por enumeración, la misma lógica que la GPU, o por conteo combinatorio (`--estrategia-caminos-cpu`). Con `--gpu` mide también la GPU en la misma sesión, con las mismas opciones de configuración que `censo_3n.py` (incluido `--preproceso`). Las aceleraciones se calculan contra el njit más rápido de cada tipo (1 hilo y multihilo).
+
+### `demo.py`: experimentos
+
+```bash
+python demo.py
+python demo.py --rapido
+python demo.py --escala prueba
+python demo.py --solo barrido cpu_gpu --config mejor_config.json
+python demo.py --dataset orkut
+```
+
+| Escala | Grafos | Uso |
+|---|---|---|
+| `completa` (por defecto) | Hasta millones de aristas, más LiveJournal | Resultados del artículo |
+| `rapida` (`--rapido`) | Cientos de miles de aristas, sin grafo real | Revisión en minutos |
+| `prueba` | Decenas de nodos | Comprobar que todo corre, incluso en el simulador |
+
+| # | Experimento (`--solo`) | Qué mide |
+|---|---|---|
+| 1 | `validacion` | Por grafo: invariantes, exploración = centro, las 4 variantes njit, las 12 configuraciones de caminos y las 9 de triángulos en GPU, el censo completo y los IDs camino por camino. Incluye grafos con 13 y 260 etiquetas de nodo para pasar por los modos `global` y `hash` |
+| 2 | `estrategias` | Python: exploración (hash de IDs) contra centro, en tiempo, memoria y trabajo descartado |
+| 3 | `barrido` | Estrategia × memoria × bloque en BA, Erdős–Rényi y grafo completo. Guarda `mejor_config_<grafo>.json` |
+| 4 | `cpu_gpu` | Censo completo: Python (si W ≤ 5 M), njit 1 hilo y multihilo (enumeración y combinatoria) y GPU con la mejor configuración del barrido, con preproceso en GPU y en CPU. Separa preparación y censo |
+| 5 | `escalabilidad` | Tamaño (BA), densidad (Erdős–Rényi) y número de etiquetas (P de 1 a ~10⁶), con una configuración GPU fija |
+| 6 | `real` | LiveJournal u otro: T contra SNAP, barrido en el grafo real (`--sin-barrido-real` lo omite) y CPU vs GPU |
+| 7 | resumen | Tabla consolidada y figuras |
+
+Cada ejecución crea `resultados/demo_<fecha>_<hora>/` con `resumen.md` (todas las tablas), `resultados.json` (todos los datos), `cpu_vs_gpu.png`, `escalabilidad_tamano.png`, `escalabilidad_densidad.png`, `escalabilidad_etiquetas.png` y los `mejor_config_*.json`. Si un experimento falla, se registra el error y la demo sigue.
+
+### `censo_3n2a_gpu.py` y `censo_3n2a.py`
 
 ```bash
 python censo_3n2a_gpu.py --grafo ba --n 50000 --k 3 --reps 3 --verificar-ids
-python censo_3n2a_gpu.py --grafo completo --n 1000 --sin-secuencial
-python censo_3n2a_gpu.py --csr grafo.npz --kernel balanceado --conteo hash
+python censo_3n2a.py --grafo ba --n 20000 --k 3 --comparar --memoria
+python censo_3n2a.py --archivo ejemplos/moleculas.txt --dibujar
 ```
 
-Con `--help` se ven todas las opciones. Los generadores disponibles son `ejemplo`, `triangulo`, `estrella`, `completo`, `aleatorio` y `ba`.
+`censo_3n2a_gpu.py` mide solo caminos no inducidos: todas las estrategias × memorias (`--estrategia`, `--memoria`) contra los dos métodos de Python, y con `--verificar-ids` comprueba que la GPU cuenta exactamente los mismos caminos que la CPU, sin duplicados. `censo_3n2a.py` es la referencia secuencial; `--sin-triangulos` omite triángulos e inducido.
 
-El formato CSR para `--csr` es un `.npz` con estos arreglos:
+### Desde Python
 
-- `offsets` (n + 1),
-- `indices` (cada arista en ambos sentidos),
-- `etiqueta_nodo`,
-- y opcionalmente `etiqueta_arista`, `nombres_nodo` y `nombres_arista`.
+```python
+import censo_3n as c3
+import censo_3n2a_gpu as gpu
+import generadores
+
+csr = generadores.csr_sintetico("ba", 1_000_000, k=8, L=3, E=2)
+res = c3.censo3(csr)
+res = c3.censo3(csr, estrategia_caminos="combinatorio", memoria_tri="hash")
+res = c3.censo3(csr, config=c3.cargar_config("mejor_config.json"))
+res = c3.censo3(csr, preproceso="cpu")
+
+res["caminos_no_inducidos"], res["caminos_inducidos"], res["triangulos"]
+res["tiempos"]
+c3.invariantes(res)
+df = c3.a_dataframe(res)
+```
+
+Cada censo es un diccionario `{patrón: frecuencia}`. `res["tiempos"]` trae cada fase por separado; `a_dataframe` arma la tabla de pandas. También se puede cargar un CSR guardado con `gpu.cargar_npz("grafo.npz")`.
+
+## Estrategias y modos de memoria
+
+La GPU separa dos decisiones: **cómo se reparte el trabajo** entre hilos (estrategia) y **dónde se acumula el histograma** de patrones (memoria). Cada combinación compila su propio kernel, así que la memoria compartida se reserva solo en el modo `shared`. Lo comprueba `tests/test_ptx.py` sobre el PTX generado.
+
+### Caminos
+
+| Estrategia | Cada hilo procesa | Ventaja | Costo o límite |
+|---|---|---|---|
+| `nodo` | Un nodo central completo: C(d, 2) pares | La más simple | Un hub deja a un hilo con casi todo. Se omite si un hilo tendría más de 50 M de caminos |
+| `entrada` | Una entrada `p` del CSR (vecino `i` de `c`) y todos los `j > i` de esa fila | Reparto más fino | Necesita el arreglo `fila` (4 bytes por entrada) |
+| `balanceado` | Un bloque fijo de `chunk` caminos (64 por defecto) | Balance casi perfecto | Una búsqueda binaria y un desrankeo por bloque |
+| `combinatorio` | Un nodo: cuenta sus vecinos por tipo de rama y suma C(n_b, 2) o n_b₁ · n_b₂ por patrón | No enumera: O(m + Σ k²), con k tipos de rama presentes en el nodo | No da instancias. Exige B = E · L ≤ 128 |
+
+Las tres primeras **enumeran** cada camino. Se mantienen por la verificación camino por camino (solo `balanceado` emite IDs), como base para extensiones que necesitan las instancias (soporte MNI, listado) y como estudio de balanceo de carga.
+
+### Triángulos
+
+El grafo se orienta de menor a mayor grado (desempate por id). Cada triángulo aparece una sola vez: la arista orientada u → v lo encuentra en out(u) ∩ out(v).
+
+| Estrategia | Cada hilo procesa | Cuándo conviene |
+|---|---|---|
+| `arista` | Una arista orientada; intersección por mezcla de dos listas ordenadas: O(d_u + d_v) | Grados parecidos |
+| `binaria` | Una arista orientada; recorre la lista corta y busca cada elemento en la larga: O(mín · log máx) | Grados muy distintos |
+| `balanceado` | Un ítem de `chunk-tri` unidades de costo (aristas contiguas con costo total parecido) | Desbalance de costo entre aristas y localidad |
+
+### Modos de memoria (caminos y triángulos)
+
+| Modo | Estructura | Válido si |
+|---|---|---|
+| `global` | Histograma denso en memoria global, un atómico por actualización | Patrones posibles ≤ 2²⁴ |
+| `shared` | Histograma por bloque en memoria compartida (2048 casillas, 16 KB); al final se vuelca a global | Patrones posibles ≤ 2048 |
+| `hash` | Tabla hash en memoria global (sondeo lineal, `atomic.cas`), ocupación ≤ 50% | Siempre |
+
+Patrones posibles: caminos P = L · B², triángulos PT = B³, con B = E · L. Ejemplos: 3 × 2 etiquetas dan P = 108 y PT = 216; 5 × 2 dan P = 500 y PT = 1000; 13 × 1 dan P = PT = 2197 (ya no cabe en `shared`). En las estrategias que enumeran, cada hilo junta en registros las repeticiones seguidas del mismo patrón y hace un solo atómico por racha; `combinatorio` suma directamente n_b₁ · n_b₂.
+
+### CPU compilada
+
+| Estrategia | Qué hace |
+|---|---|
+| `enumeracion` | La misma enumeración por centro que la GPU, con histogramas parciales por bloque de trabajo |
+| `combinatorio` | El mismo conteo combinatorio que la estrategia GPU `combinatorio` |
+
+Los triángulos usan la misma mezcla que la estrategia GPU `arista`. En paralelo, los bloques se cortan por trabajo (suma prefija de C(d, 2), de grados o de costos), no por número de nodos.
+
+## Cómo se mide
+
+La GPU trabaja en dos etapas: **preparación** (dejar el grafo y sus arreglos derivados en la GPU) y **censo** (contar con el grafo ya preparado).
+
+| Fase | Qué incluye |
+|---|---|
+| Preproceso CPU | Suma prefija de C(d, 2) por nodo. Con `--preproceso cpu`, además, la orientación y el arreglo `fila` |
+| Carga | Copiar el CSR a la GPU, una vez para caminos y triángulos. Con `--preproceso cpu`, además, los arreglos construidos en CPU |
+| Preproceso GPU | Con `--preproceso gpu`: orientación (conteo, suma prefija, llenado y costos) y arreglo `fila`, con kernels propios |
+| **Preparación** | Preproceso CPU + carga + preproceso GPU |
+| H2D | Reservar el histograma o la tabla de cada parte |
+| Cálculo | Todos los lanzamientos del kernel |
+| D2H | Traer el histograma, quedarse con lo no nulo y decodificar |
+| Resta e inducido | En CPU, a partir del censo de triángulos |
+| **Censo** | Caminos (H2D + cálculo + D2H) + triángulos (ídem) + resta e inducido |
+| **Extremo a extremo** | Preparación + censo |
+
+En la CPU compilada, la preparación es la suma prefija y la orientación en CPU (`njit`). La separación tiene una lectura directa para la integración con RAPIDS: si el grafo ya estuviera en la GPU, la carga desaparecería.
+
+- **Repeticiones:** una de calentamiento, que paga la compilación JIT y no se cuenta, y luego `--reps` medidas.
+- **Estadístico:** media ± desviación estándar, igual en CPU y GPU. El mínimo queda en los JSON y CSV. Las aceleraciones dividen medias.
+- **Preparación:** en `censo_3n.py`, `censo_3n_cpu_njit.py` y la demo se vuelve a medir en cada repetición. En el barrido se hace una vez y se informa aparte, porque se comparan solo las fases de cada configuración.
+- **Lotes:** el trabajo se divide en lanzamientos de hasta `--trabajo-por-lanzamiento` unidades (10⁹ por defecto), porque Windows/WSL aborta los kernels demasiado largos cuando la GPU también maneja la pantalla.
+- **Desbalance:** es un modelo analítico (trabajo del hilo más cargado / promedio), no una medición. No se modela para `combinatorio` ni para triángulos.
+
+## Correctitud
+
+```bash
+python -m pytest -q tests
+NUMBA_ENABLE_CUDASIM=1 python -m pytest -q tests
+```
+
+| Archivo | Qué comprueba |
+|---|---|
+| `test_oraculo.py` | El oráculo Python contra fuerza bruta sobre cada trío de nodos (los tres censos, 40 grafos aleatorios y moléculas); la resta derivada del censo de triángulos; casos borde e invariantes |
+| `test_csr.py` | CSR ida y vuelta; `csr_desde_aristas` (la ruta de SNAP) igual a `grafo_a_csr`; `.npz` ida y vuelta, filas desordenadas y CSR asimétrico; orientación; que los lotes cubran todo sin solaparse |
+| `test_config.py` | Configuración: valores por defecto, archivo, errores y modo de memoria según el número de etiquetas (`shared` → `global` → `hash`) |
+| `test_cpu_njit.py` | njit (enumeración y combinatoria, 1 hilo y multihilo) contra el oráculo, también con muchas etiquetas |
+| `test_generadores.py` | Los generadores rápidos dan CSR válidos, reproducibles y de tamaño esperado |
+| `test_gpu.py` | Las 12 configuraciones de caminos y las 9 de triángulos (con lotes chicos que fuerzan varios lanzamientos); `censo3` con los dos preprocesos; IDs camino por camino; muchas etiquetas; el barrido, incluido que detecte una configuración incorrecta; scan en GPU contra `np.cumsum`; orientación y `fila` en GPU idénticas, arreglo por arreglo, a las de CPU; cortes de lotes en GPU; grafo residente compartido entre configuraciones |
+| `test_ptx.py` | Que los 30 kernels (21 de conteo y 9 de preproceso) compilen para sm_120 y que los de conteo reserven memoria compartida solo en el modo `shared` |
+
+- **Sin GPU:** corren todos menos `test_gpu.py`.
+- **Con el simulador** (`NUMBA_ENABLE_CUDASIM=1`): corren todos menos `test_ptx.py`. El simulador ejecuta los kernels en Python, así que valida la lógica, pero no la compilación.
+- **Con GPU:** corre todo.
+
+En cada corrida, además, `censo_3n.py` y `barrido.py` comprueban las invariantes (Σ no inducido = W, Σ triángulos = T, Σ inducido = W − 3T), que todas las repeticiones den el mismo censo y, en SNAP, T contra el valor publicado.
 
 ## Datos reales
 
-| Opción | Grafo | Nodos | Aristas | Fuente |
-|---|---|---|---|---|
-| `livejournal` (por defecto) | com-LiveJournal | 3.997.962 | 34.681.189 | [SNAP](https://snap.stanford.edu/data/com-LiveJournal.html) |
-| `orkut` | com-Orkut | 3.072.441 | 117.185.083 | [SNAP](https://snap.stanford.edu/data/com-Orkut.html) |
-| `twitter` | ego-Twitter (se trata como no dirigido) | — | — | [SNAP](https://snap.stanford.edu/data/ego-Twitter.html) |
+| Opción | Grafo | Nodos | Aristas | Triángulos (SNAP) | Fuente |
+|---|---|---|---|---|---|
+| `livejournal` | com-LiveJournal | 3.997.962 | 34.681.189 | 177.820.130 | [SNAP](https://snap.stanford.edu/data/com-LiveJournal.html) |
+| `orkut` | com-Orkut | 3.072.441 | 117.185.083 | 627.584.181 | [SNAP](https://snap.stanford.edu/data/com-Orkut.html) |
+| `twitter` | ego-Twitter (como no dirigido) | — | — | — | [SNAP](https://snap.stanford.edu/data/ego-Twitter.html) |
 
-Los grafos de SNAP no traen etiquetas. La demo asigna etiquetas uniformes al azar con una semilla fija, por defecto 5 de nodo y 2 de arista. Cada arista tiene la misma etiqueta en ambos sentidos. Se eliminan los lazos y las aristas repetidas, y los IDs de nodo se renumeran de 0 a n − 1.
-
-Si la descarga falla (por ejemplo, por un proxy), descarga el `.gz` a mano desde la página de SNAP y déjalo en `datasets/` con su nombre original:
-
-- `com-lj.ungraph.txt.gz`
-- `com-orkut.ungraph.txt.gz`
-- `twitter_combined.txt.gz`
+Los grafos de SNAP no traen etiquetas: se asignan al azar, uniformes, con semilla fija (5 de nodo y 2 de arista por defecto). Se eliminan lazos y aristas repetidas, y los nodos se renumeran de 0 a n − 1. Si la descarga falla, baja el `.gz` desde la página de SNAP y déjalo en `datasets/` con su nombre original (`com-lj.ungraph.txt.gz`, `com-orkut.ungraph.txt.gz` o `twitter_combined.txt.gz`).
 
 Cita de los datos: Jure Leskovec y Andrej Krevl, *SNAP Datasets: Stanford Large Network Dataset Collection*, http://snap.stanford.edu/data, 2014.
 
 ## Solución de problemas
 
-- **`cuda.is_available()` devuelve `False`:** revisa que `nvidia-smi` funcione y que el extra de `numba-cuda` (`cu12` o `cu13`) coincida con la versión de CUDA del driver.
-- **Error `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`:** el driver es más antiguo que las librerías de CUDA instaladas. Actualiza el driver de NVIDIA.
-- **La pantalla se congela o aparece `CUDA_ERROR_LAUNCH_TIMEOUT`:** reduce el trabajo por lanzamiento, por ejemplo con `python demo.py --trabajo-por-lanzamiento 200000000`.
-- **`MemoryError` o el proceso muere al cargar Orkut:** no hay RAM suficiente; usa `livejournal`. En WSL2, la RAM disponible se configura en `.wslconfig`.
-- **Advertencias `NumbaPerformanceWarning`:** aparecen con grafos chicos y son inofensivas. Se pueden ocultar con `NUMBA_CUDA_LOW_OCCUPANCY_WARNINGS=0`.
-- **Sin GPU disponible:** la demo continúa con la parte de CPU e indica el motivo en la sección de entorno.
+- **`cuda.is_available()` devuelve `False`:** revisa que `nvidia-smi` funcione y que el extra de `numba-cuda` (`cu12` o `cu13`) coincida con el driver.
+- **`AttributeError: module 'numpy' has no attribute 'row_stack'`:** tienes numpy 2.5 o superior. Corre `pip install "numpy<2.5"`.
+- **`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`:** las librerías de CUDA instaladas por pip son más nuevas que el driver. Puede pasar al crear un entorno nuevo, porque pip instala la versión más reciente. Lo más simple es actualizar el driver; la alternativa es instalar las ruedas de CUDA de la versión del driver (revisa cuáles quedaron con `pip list | grep -i -E "cuda|nvvm"`).
+- **Pantalla congelada o `CUDA_ERROR_LAUNCH_TIMEOUT`:** baja el trabajo por lanzamiento, por ejemplo `--trabajo-por-lanzamiento 200000000`.
+- **Una configuración aparece como omitida en el barrido:** el motivo queda en la tabla y en el CSV (patrones posibles, memoria de GPU o hub).
+- **`MemoryError` o proceso muerto al cargar Orkut:** falta RAM. En WSL2 se configura en `.wslconfig`.
+- **Advertencias `NumbaPerformanceWarning`:** aparecen con grafos chicos y son inofensivas.
 
 ## Limitaciones conocidas
 
-- La referencia de CPU es Python puro, así que la aceleración frente a una CPU compilada sería menor.
-- La construcción de los grafos sintéticos es secuencial en Python.
-- El soporte por transacción (para bases de varios grafos) solo existe en la versión secuencial.
+- **Entrada en memoria de CPU.** El CSR tiene el mismo formato que usa cuGraph (`offsets`, `indices`), pero hoy entra como arreglos de NumPy y se copia a la GPU una vez por censo (fase de carga). Falta el adaptador desde cuDF o `cugraph.Graph` sin pasar por la CPU.
+- **Suma prefija en CPU.** La suma prefija de C(d, 2) por nodo se sigue calculando en CPU (es O(n)); los lotes y la estrategia `balanceado` la usan.
+- **Memoria de la preparación.** Con el grafo residente, la GPU guarda a la vez el CSR, el arreglo `fila` (si la estrategia es `entrada`) y la orientación con sus sumas de costo. En LiveJournal ocupa poco; en Orkut puede acercarse al límite de 8 GB, sobre todo en el barrido, que prepara los arreglos de todas las estrategias.
+- **Etiquetas sintéticas.** En SNAP se asignan al azar, así que el censo de esos grafos sale casi plano. Falta un grafo con etiquetas reales.
+- **Límites por modo.** `shared` admite hasta 2048 patrones posibles, `combinatorio` hasta 128 tipos de rama, y el baseline njit usa histogramas densos (hasta 2²⁴ patrones). `hash` no tiene límite de patrones.
+- **Soporte por transacción.** Para bases de varios grafos (gSpan), el soporte por transacción existe solo en la referencia Python.
+- **Una GPU.** No hay versión multi-GPU.

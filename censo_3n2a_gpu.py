@@ -5,7 +5,7 @@ import os
 import time
 
 import numpy as np
-from numba import cuda, int64, njit
+from numba import cuda, int32, int64, njit
 
 import censo_3n2a as sec
 
@@ -13,9 +13,11 @@ VACIO = -1
 BINS_SHARED = 2048
 LIMITE_DENSO = 1 << 24
 LIMITE_VERIFICAR_IDS = 5_000_000
+LIMITE_TRABAJO_HILO = 50_000_000
+MAX_TIPOS_COMBINATORIO = 128
 TRABAJO_POR_LANZAMIENTO = 1_000_000_000
-MODOS = {"global": 0, "shared": 1, "hash": 2}
-KERNELS = ["nodo", "entrada", "balanceado"]
+MEMORIAS = {"global": 0, "shared": 1, "hash": 2}
+ESTRATEGIAS = ["nodo", "entrada", "balanceado", "combinatorio"]
 
 
 class CSR:
@@ -276,109 +278,290 @@ def desrankear(k, d):
     return i, i + 1 + k - i * (t - i) // 2
 
 
-@cuda.jit
-def k_nodo(offsets, indices, et_nodo, et_arista, inicio, fin, L, B, P, modo, hist, claves, valores):
-    sh = cuda.shared.array(BINS_SHARED, int64)
-    iniciar_shared(sh, P, modo)
-    ultimo = -1
-    cant = 0
-    for c in range(inicio + cuda.grid(1), fin, cuda.gridsize(1)):
-        ini = offsets[c]
-        fin_c = offsets[c + 1]
-        lc = et_nodo[c]
-        for i in range(ini, fin_c):
-            bi = et_arista[i] * L + et_nodo[indices[i]]
-            for j in range(i + 1, fin_c):
-                pid = id_patron(lc, bi, et_arista[j] * L + et_nodo[indices[j]], B)
+def _fabricar_kernels(modo):
+    tam_sh = BINS_SHARED if modo == 1 else 1
+
+    @cuda.jit
+    def k_nodo(offsets, indices, et_nodo, et_arista, inicio, fin, L, B, P, hist, claves, valores):
+        sh = cuda.shared.array(tam_sh, int64)
+        iniciar_shared(sh, P, modo)
+        ultimo = -1
+        cant = 0
+        for c in range(inicio + cuda.grid(1), fin, cuda.gridsize(1)):
+            ini = offsets[c]
+            fin_c = offsets[c + 1]
+            lc = et_nodo[c]
+            for i in range(ini, fin_c):
+                bi = et_arista[i] * L + et_nodo[indices[i]]
+                for j in range(i + 1, fin_c):
+                    pid = id_patron(lc, bi, et_arista[j] * L + et_nodo[indices[j]], B)
+                    if pid == ultimo:
+                        cant += 1
+                    else:
+                        volcar(ultimo, cant, modo, hist, sh, claves, valores)
+                        ultimo = pid
+                        cant = 1
+        volcar(ultimo, cant, modo, hist, sh, claves, valores)
+        vaciar_shared(sh, P, modo, hist)
+
+    @cuda.jit
+    def k_entrada(offsets, indices, et_nodo, et_arista, fila, inicio, fin, L, B, P, hist, claves, valores):
+        sh = cuda.shared.array(tam_sh, int64)
+        iniciar_shared(sh, P, modo)
+        ultimo = -1
+        cant = 0
+        for p in range(inicio + cuda.grid(1), fin, cuda.gridsize(1)):
+            c = fila[p]
+            fin_c = offsets[c + 1]
+            lc = et_nodo[c]
+            bi = et_arista[p] * L + et_nodo[indices[p]]
+            for q in range(p + 1, fin_c):
+                pid = id_patron(lc, bi, et_arista[q] * L + et_nodo[indices[q]], B)
                 if pid == ultimo:
                     cant += 1
                 else:
                     volcar(ultimo, cant, modo, hist, sh, claves, valores)
                     ultimo = pid
                     cant = 1
-    volcar(ultimo, cant, modo, hist, sh, claves, valores)
-    vaciar_shared(sh, P, modo, hist)
+        volcar(ultimo, cant, modo, hist, sh, claves, valores)
+        vaciar_shared(sh, P, modo, hist)
 
-
-@cuda.jit
-def k_entrada(offsets, indices, et_nodo, et_arista, fila, inicio, fin, L, B, P, modo, hist, claves, valores):
-    sh = cuda.shared.array(BINS_SHARED, int64)
-    iniciar_shared(sh, P, modo)
-    ultimo = -1
-    cant = 0
-    for p in range(inicio + cuda.grid(1), fin, cuda.gridsize(1)):
-        c = fila[p]
-        fin_c = offsets[c + 1]
-        lc = et_nodo[c]
-        bi = et_arista[p] * L + et_nodo[indices[p]]
-        for q in range(p + 1, fin_c):
-            pid = id_patron(lc, bi, et_arista[q] * L + et_nodo[indices[q]], B)
-            if pid == ultimo:
-                cant += 1
-            else:
-                volcar(ultimo, cant, modo, hist, sh, claves, valores)
-                ultimo = pid
-                cant = 1
-    volcar(ultimo, cant, modo, hist, sh, claves, valores)
-    vaciar_shared(sh, P, modo, hist)
-
-
-@cuda.jit
-def k_balanceado(offsets, indices, et_nodo, et_arista, id_arista, acum, n, W, chunk, ch_inicio, ch_fin,
-                 L, B, P, modo, hist, claves, valores, emitir, out1, out2):
-    sh = cuda.shared.array(BINS_SHARED, int64)
-    iniciar_shared(sh, P, modo)
-    ultimo = -1
-    cant = 0
-    for ch in range(ch_inicio + cuda.grid(1), ch_fin, cuda.gridsize(1)):
-        w = ch * chunk
-        fin_w = min(w + chunk, W)
-        lo = 0
-        hi = n
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if acum[mid] <= w:
-                lo = mid
-            else:
-                hi = mid - 1
-        c = lo
-        ini = offsets[c]
-        d = offsets[c + 1] - ini
-        lc = et_nodo[c]
-        i, j = desrankear(w - acum[c], d)
-        bi = et_arista[ini + i] * L + et_nodo[indices[ini + i]]
-        while w < fin_w:
-            pid = id_patron(lc, bi, et_arista[ini + j] * L + et_nodo[indices[ini + j]], B)
-            if emitir:
-                a = id_arista[ini + i]
-                b = id_arista[ini + j]
-                if a > b:
-                    a, b = b, a
-                out1[w] = a
-                out2[w] = b
-            if pid == ultimo:
-                cant += 1
-            else:
-                volcar(ultimo, cant, modo, hist, sh, claves, valores)
-                ultimo = pid
-                cant = 1
-            w += 1
-            if w < fin_w:
-                j += 1
-                if j == d:
-                    i += 1
-                    if i >= d - 1:
-                        c += 1
-                        while acum[c + 1] == acum[c]:
+    @cuda.jit
+    def k_balanceado(offsets, indices, et_nodo, et_arista, id_arista, acum, n, W, chunk, ch_inicio, ch_fin,
+                     L, B, P, hist, claves, valores, emitir, out1, out2):
+        sh = cuda.shared.array(tam_sh, int64)
+        iniciar_shared(sh, P, modo)
+        ultimo = -1
+        cant = 0
+        for ch in range(ch_inicio + cuda.grid(1), ch_fin, cuda.gridsize(1)):
+            w = ch * chunk
+            fin_w = min(w + chunk, W)
+            lo = 0
+            hi = n
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if acum[mid] <= w:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            c = lo
+            ini = offsets[c]
+            d = offsets[c + 1] - ini
+            lc = et_nodo[c]
+            i, j = desrankear(w - acum[c], d)
+            bi = et_arista[ini + i] * L + et_nodo[indices[ini + i]]
+            while w < fin_w:
+                pid = id_patron(lc, bi, et_arista[ini + j] * L + et_nodo[indices[ini + j]], B)
+                if emitir:
+                    a = id_arista[ini + i]
+                    b = id_arista[ini + j]
+                    if a > b:
+                        a, b = b, a
+                    out1[w] = a
+                    out2[w] = b
+                if pid == ultimo:
+                    cant += 1
+                else:
+                    volcar(ultimo, cant, modo, hist, sh, claves, valores)
+                    ultimo = pid
+                    cant = 1
+                w += 1
+                if w < fin_w:
+                    j += 1
+                    if j == d:
+                        i += 1
+                        if i >= d - 1:
                             c += 1
-                        ini = offsets[c]
-                        d = offsets[c + 1] - ini
-                        lc = et_nodo[c]
-                        i = 0
-                    j = i + 1
-                    bi = et_arista[ini + i] * L + et_nodo[indices[ini + i]]
-    volcar(ultimo, cant, modo, hist, sh, claves, valores)
-    vaciar_shared(sh, P, modo, hist)
+                            while acum[c + 1] == acum[c]:
+                                c += 1
+                            ini = offsets[c]
+                            d = offsets[c + 1] - ini
+                            lc = et_nodo[c]
+                            i = 0
+                        j = i + 1
+                        bi = et_arista[ini + i] * L + et_nodo[indices[ini + i]]
+        volcar(ultimo, cant, modo, hist, sh, claves, valores)
+        vaciar_shared(sh, P, modo, hist)
+
+    @cuda.jit
+    def k_combinatorio(offsets, indices, et_nodo, et_arista, inicio, fin, L, B, P, hist, claves, valores):
+        sh = cuda.shared.array(tam_sh, int64)
+        iniciar_shared(sh, P, modo)
+        cuenta = cuda.local.array(MAX_TIPOS_COMBINATORIO, int32)
+        presentes = cuda.local.array(MAX_TIPOS_COMBINATORIO, int32)
+        for t in range(B):
+            cuenta[t] = 0
+        for c in range(inicio + cuda.grid(1), fin, cuda.gridsize(1)):
+            k = 0
+            for p in range(offsets[c], offsets[c + 1]):
+                b = et_arista[p] * L + et_nodo[indices[p]]
+                if cuenta[b] == 0:
+                    presentes[k] = b
+                    k += 1
+                cuenta[b] += 1
+            lc = et_nodo[c]
+            for x in range(k):
+                b1 = presentes[x]
+                n1 = int64(cuenta[b1])
+                volcar(id_patron(lc, b1, b1, B), n1 * (n1 - 1) // 2, modo, hist, sh, claves, valores)
+                for y in range(x + 1, k):
+                    b2 = presentes[y]
+                    volcar(id_patron(lc, b1, b2, B), n1 * cuenta[b2], modo, hist, sh, claves, valores)
+            for x in range(k):
+                cuenta[presentes[x]] = 0
+        vaciar_shared(sh, P, modo, hist)
+
+    return {"nodo": k_nodo, "entrada": k_entrada, "balanceado": k_balanceado, "combinatorio": k_combinatorio}
+
+
+_KERNELS = {}
+
+
+def kernels(memoria):
+    if memoria not in _KERNELS:
+        _KERNELS[memoria] = _fabricar_kernels(MEMORIAS[memoria])
+    return _KERNELS[memoria]
+
+
+SCAN_HILOS = 256
+SCAN_POR_HILO = 4
+SCAN_BLOQUE = SCAN_HILOS * SCAN_POR_HILO
+
+
+@cuda.jit
+def _k_scan_bloque(entrada, salida, sumas, n):
+    sh = cuda.shared.array(SCAN_HILOS, int64)
+    local = cuda.local.array(SCAN_POR_HILO, int64)
+    t = cuda.threadIdx.x
+    base = cuda.blockIdx.x * SCAN_BLOQUE + t * SCAN_POR_HILO
+    acc = int64(0)
+    for k in range(SCAN_POR_HILO):
+        i = base + k
+        if i < n:
+            acc += entrada[i]
+        local[k] = acc
+    sh[t] = acc
+    cuda.syncthreads()
+    d = 1
+    while d < SCAN_HILOS:
+        v = int64(0)
+        if t >= d:
+            v = sh[t - d]
+        cuda.syncthreads()
+        sh[t] += v
+        cuda.syncthreads()
+        d *= 2
+    previo = int64(0)
+    if t > 0:
+        previo = sh[t - 1]
+    for k in range(SCAN_POR_HILO):
+        i = base + k
+        if i < n:
+            salida[i] = local[k] + previo
+    if t == SCAN_HILOS - 1:
+        sumas[cuda.blockIdx.x] = sh[t]
+
+
+@cuda.jit
+def _k_sumar_bloques(salida, sumas, n):
+    b = cuda.blockIdx.x
+    if b > 0:
+        extra = sumas[b - 1]
+        base = b * SCAN_BLOQUE
+        for k in range(cuda.threadIdx.x, SCAN_BLOQUE, cuda.blockDim.x):
+            i = base + k
+            if i < n:
+                salida[i] += extra
+
+
+@cuda.jit
+def _k_escribir(arr, i, valor):
+    if cuda.grid(1) == 0:
+        arr[i] = valor
+
+
+@cuda.jit
+def _k_fila(offsets, n, fila):
+    for c in range(cuda.grid(1), n, cuda.gridsize(1)):
+        for p in range(offsets[c], offsets[c + 1]):
+            fila[p] = c
+
+
+@cuda.jit
+def _k_buscar(acum, m, objetivos, salida):
+    i = cuda.grid(1)
+    if i < objetivos.shape[0]:
+        x = objetivos[i]
+        lo = 0
+        hi = m
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if acum[mid] < x:
+                lo = mid + 1
+            else:
+                hi = mid
+        salida[i] = lo
+
+
+def en_gpu(a):
+    return hasattr(a, "__cuda_array_interface__")
+
+
+def configuracion_lanzamiento(items, bloque=256, max_bloques=4096):
+    return max(1, min(math.ceil(items / bloque), max_bloques)), bloque
+
+
+def scan_inclusivo(d_entrada, d_salida, n):
+    if n <= 0:
+        return
+    nb = (n + SCAN_BLOQUE - 1) // SCAN_BLOQUE
+    d_sumas = cuda.device_array(nb, np.int64)
+    _k_scan_bloque[nb, SCAN_HILOS](d_entrada, d_salida, d_sumas, n)
+    if nb > 1:
+        scan_inclusivo(d_sumas, d_sumas, nb)
+        _k_sumar_bloques[nb, SCAN_HILOS](d_salida, d_sumas, n)
+
+
+def prefijo_exclusivo(d_valores, n):
+    d_salida = cuda.device_array(n + 1, np.int64)
+    _k_escribir[1, 1](d_salida, 0, 0)
+    scan_inclusivo(d_valores, d_salida[1:], n)
+    return d_salida
+
+
+def escribir(d_arr, i, valor):
+    _k_escribir[1, 1](d_arr, i, valor)
+
+
+def leer_escalar(d_arr, i):
+    return int(d_arr[i:i + 1].copy_to_host()[0])
+
+
+def buscar_cortes(acum, objetivos):
+    objetivos = np.ascontiguousarray(objetivos, dtype=np.int64)
+    if not en_gpu(acum):
+        return np.searchsorted(acum, objetivos)
+    if len(objetivos) == 0:
+        return np.empty(0, np.int64)
+    d_salida = cuda.device_array(len(objetivos), np.int64)
+    _k_buscar[(len(objetivos) + 255) // 256, 256](acum, acum.shape[0], cuda.to_device(objetivos), d_salida)
+    return d_salida.copy_to_host()
+
+
+def subir_grafo(csr):
+    return {"offsets": cuda.to_device(csr.offsets), "indices": cuda.to_device(csr.indices),
+            "et_nodo": cuda.to_device(csr.et_nodo), "et_arista": cuda.to_device(csr.et_arista)}
+
+
+def fila_en_gpu(disp, n, nnz, bloque=256, max_bloques=4096):
+    d_fila = cuda.device_array(max(1, nnz), np.int32)
+    bloques, hilos = configuracion_lanzamiento(n, bloque, max_bloques)
+    _k_fila[bloques, hilos](disp["offsets"], n, d_fila)
+    return d_fila
+
+
+def _tomar(disp, clave, host):
+    return disp[clave] if clave in disp else a_dispositivo(host)
 
 
 def preparar(csr):
@@ -393,7 +576,8 @@ def preparar(csr):
     if P >= 1 << 62:
         raise ValueError("Demasiadas etiquetas para codificar el patrón en 64 bits")
     return {"grados": grados, "cunas": cunas, "acum": acum, "fila": None,
-            "W": int(acum[-1]), "L": L, "E": E, "B": B, "P": P}
+            "W": int(acum[-1]), "L": L, "E": E, "B": B, "P": P,
+            "grado_max": int(grados.max()) if csr.n else 0, "max_cunas": int(cunas.max()) if csr.n else 0}
 
 
 def obtener_fila(csr, prep):
@@ -423,12 +607,32 @@ def decodificar(pids, cuentas, csr, prep):
     return censo
 
 
-def config_valida(conteo, P):
-    if conteo == "shared":
-        return P <= BINS_SHARED
-    if conteo == "global":
-        return P <= LIMITE_DENSO
-    return True
+def motivo_memoria(memoria, espacio):
+    if memoria == "shared" and espacio > BINS_SHARED:
+        return f"{espacio:,} patrones posibles superan las {BINS_SHARED:,} casillas de memoria compartida"
+    if memoria == "global" and espacio > LIMITE_DENSO:
+        return f"{espacio:,} patrones posibles superan el histograma denso ({LIMITE_DENSO:,} casillas)"
+    return None
+
+
+def memoria_por_defecto(espacio):
+    for memoria in ("shared", "global", "hash"):
+        if motivo_memoria(memoria, espacio) is None:
+            return memoria
+
+
+def motivo_invalida(estrategia, memoria, prep):
+    if estrategia == "combinatorio" and prep["B"] > MAX_TIPOS_COMBINATORIO:
+        return (f"B = {prep['B']} tipos de rama superan el máximo de la estrategia combinatoria "
+                f"({MAX_TIPOS_COMBINATORIO})")
+    if estrategia == "nodo" and prep["max_cunas"] > LIMITE_TRABAJO_HILO:
+        return (f"un solo hilo procesaría C({prep['grado_max']:,}, 2) = {prep['max_cunas']:,} caminos "
+                f"(límite {LIMITE_TRABAJO_HILO:,} por riesgo de watchdog)")
+    return motivo_memoria(memoria, prep["P"])
+
+
+def config_valida(estrategia, memoria, prep):
+    return motivo_invalida(estrategia, memoria, prep) is None
 
 
 def memoria_gpu():
@@ -447,53 +651,69 @@ def liberar_gpu():
         pass
 
 
-def bytes_necesarios(csr, prep, kernel, conteo, emitir=False):
-    total = csr.offsets.nbytes + csr.indices.nbytes + csr.et_nodo.nbytes + csr.et_arista.nbytes
-    if kernel == "entrada":
+def bytes_necesarios(csr, prep, estrategia, memoria, emitir=False, disp=None):
+    disp = disp or {}
+    total = sum(getattr(csr, campo).nbytes for clave, campo in (("offsets", "offsets"), ("indices", "indices"),
+                                                                ("et_nodo", "et_nodo"), ("et_arista", "et_arista"))
+                if clave not in disp)
+    if estrategia == "entrada" and "fila" not in disp:
         total += 4 * csr.nnz
-    if kernel == "balanceado":
-        total += prep["acum"].nbytes
+    if estrategia == "balanceado":
+        total += 0 if "acum" in disp else prep["acum"].nbytes
         if emitir:
             total += 8 * csr.nnz + 16 * prep["W"]
-    total += 8 * prep["P"] if MODOS[conteo] < 2 else 16 * capacidad_hash(prep["W"], prep["P"])
+    total += 8 * prep["P"] if MEMORIAS[memoria] < 2 else 16 * capacidad_hash(prep["W"], prep["P"])
     return total
 
 
-def lotes(kernel, csr, prep, chunk, trabajo_max):
+def lotes(estrategia, csr, prep, chunk, trabajo_max):
     W = prep["W"]
-    if kernel == "balanceado":
+    if estrategia == "balanceado":
         nch = (W + chunk - 1) // chunk
         paso = max(1, trabajo_max // chunk)
         return [(i, min(i + paso, nch)) for i in range(0, nch, paso)]
     n = csr.n
-    if W <= trabajo_max:
+    acum, total = (csr.offsets, csr.nnz) if estrategia == "combinatorio" else (prep["acum"], W)
+    if total <= trabajo_max:
         cortes = np.array([0, n], dtype=np.int64)
     else:
-        objetivos = np.arange(trabajo_max, W, trabajo_max, dtype=np.int64)
-        cortes = np.unique(np.concatenate([[0], np.searchsorted(prep["acum"], objetivos), [n]]))
-    if kernel == "entrada":
+        objetivos = np.arange(trabajo_max, total, trabajo_max, dtype=np.int64)
+        cortes = np.unique(np.concatenate([[0], np.searchsorted(acum, objetivos), [n]]))
+    if estrategia == "entrada":
         cortes = csr.offsets[cortes]
     return [(int(a), int(b)) for a, b in zip(cortes[:-1], cortes[1:]) if b > a] or [(0, 0)]
 
 
-def ejecutar_gpu(csr, prep, kernel, conteo, bloque, max_bloques, chunk, emitir=False, trabajo_max=TRABAJO_POR_LANZAMIENTO):
-    modo = MODOS[conteo]
+def ejecutar_gpu(csr, prep, estrategia, memoria, bloque, max_bloques, chunk, emitir=False,
+                 trabajo_max=TRABAJO_POR_LANZAMIENTO, disp=None):
+    motivo = motivo_invalida(estrategia, memoria, prep)
+    if motivo:
+        raise ValueError(f"Configuración {estrategia} + {memoria} no válida: {motivo}")
+    if emitir and estrategia != "balanceado":
+        raise ValueError("Solo la estrategia 'balanceado' emite los IDs de cada camino")
+    k = kernels(memoria)[estrategia]
+    modo = MEMORIAS[memoria]
     W, P, n = prep["W"], prep["P"], csr.n
     L, B = prep["L"], prep["B"]
+    disp = disp or {}
 
     t0 = time.perf_counter()
-    d_off = a_dispositivo(csr.offsets)
-    d_ind = a_dispositivo(csr.indices)
-    d_etn = a_dispositivo(csr.et_nodo)
-    d_eta = a_dispositivo(csr.et_arista)
+    fila = obtener_fila(csr, prep) if estrategia == "entrada" and "fila" not in disp else None
+    t_preparacion = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    d_off = _tomar(disp, "offsets", csr.offsets)
+    d_ind = _tomar(disp, "indices", csr.indices)
+    d_etn = _tomar(disp, "et_nodo", csr.et_nodo)
+    d_eta = _tomar(disp, "et_arista", csr.et_arista)
     d_hist = cuda.to_device(np.zeros(P if modo < 2 else 1, dtype=np.int64))
     cap = capacidad_hash(W, P) if modo == 2 else 1
     d_claves = cuda.to_device(np.full(cap, VACIO, dtype=np.int64))
     d_valores = cuda.to_device(np.zeros(cap, dtype=np.int64))
-    if kernel == "entrada":
-        d_fila = a_dispositivo(obtener_fila(csr, prep))
-    if kernel == "balanceado":
-        d_acum = a_dispositivo(prep["acum"])
+    if estrategia == "entrada":
+        d_fila = disp["fila"] if "fila" in disp else a_dispositivo(fila)
+    if estrategia == "balanceado":
+        d_acum = _tomar(disp, "acum", prep["acum"])
         if emitir:
             d_ida = a_dispositivo(csr.id_arista)
             d_out1 = cuda.device_array(max(1, W), dtype=np.int64)
@@ -505,21 +725,19 @@ def ejecutar_gpu(csr, prep, kernel, conteo, bloque, max_bloques, chunk, emitir=F
     cuda.synchronize()
     t_h2d = time.perf_counter() - t0
 
-    rangos = lotes(kernel, csr, prep, chunk, trabajo_max)
+    rangos = lotes(estrategia, csr, prep, chunk, trabajo_max)
     hilos = 0
     t0 = time.perf_counter()
     for inicio, fin in rangos:
         bloques = max(1, min(math.ceil((fin - inicio) / bloque), max_bloques))
         hilos = max(hilos, bloques * bloque)
-        if kernel == "nodo":
-            k_nodo[bloques, bloque](d_off, d_ind, d_etn, d_eta, inicio, fin, L, B, P, modo, d_hist, d_claves, d_valores)
-        elif kernel == "entrada":
-            k_entrada[bloques, bloque](d_off, d_ind, d_etn, d_eta, d_fila, inicio, fin, L, B, P, modo,
-                                       d_hist, d_claves, d_valores)
+        if estrategia in ("nodo", "combinatorio"):
+            k[bloques, bloque](d_off, d_ind, d_etn, d_eta, inicio, fin, L, B, P, d_hist, d_claves, d_valores)
+        elif estrategia == "entrada":
+            k[bloques, bloque](d_off, d_ind, d_etn, d_eta, d_fila, inicio, fin, L, B, P, d_hist, d_claves, d_valores)
         else:
-            k_balanceado[bloques, bloque](d_off, d_ind, d_etn, d_eta, d_ida, d_acum, n, W, chunk, inicio, fin,
-                                          L, B, P, modo, d_hist, d_claves, d_valores, 1 if emitir else 0,
-                                          d_out1, d_out2)
+            k[bloques, bloque](d_off, d_ind, d_etn, d_eta, d_ida, d_acum, n, W, chunk, inicio, fin,
+                               L, B, P, d_hist, d_claves, d_valores, 1 if emitir else 0, d_out1, d_out2)
     cuda.synchronize()
     t_kernel = time.perf_counter() - t0
 
@@ -534,15 +752,18 @@ def ejecutar_gpu(csr, prep, kernel, conteo, bloque, max_bloques, chunk, emitir=F
         ocupadas = claves != VACIO
         pids, cuentas = claves[ocupadas], valores[ocupadas]
     censo = decodificar(pids, cuentas, csr, prep)
-    embeddings = (d_out1.copy_to_host(), d_out2.copy_to_host()) if emitir and kernel == "balanceado" and W else None
+    embeddings = (d_out1.copy_to_host(), d_out2.copy_to_host()) if emitir and W else None
     t_d2h = time.perf_counter() - t0
 
     return {
+        "estrategia": estrategia,
+        "memoria": memoria,
         "censo": censo,
         "embeddings": embeddings,
         "hilos": max(hilos, 1),
         "lanzamientos": len(rangos),
         "cap_hash": cap if modo == 2 else None,
+        "t_preparacion": t_preparacion,
         "t_h2d": t_h2d,
         "t_kernel": t_kernel,
         "t_d2h": t_d2h,
@@ -567,12 +788,14 @@ def _carga_max_entrada(offsets, hilos):
     return carga.max()
 
 
-def desbalance(csr, prep, kernel, hilos, chunk):
+def desbalance(csr, prep, estrategia, hilos, chunk):
     W = prep["W"]
+    if estrategia == "combinatorio":
+        return None
     if W == 0 or hilos <= 0:
         return 1.0
     prom = W / hilos
-    if kernel == "balanceado":
+    if estrategia == "balanceado":
         nchunks = (W + chunk - 1) // chunk
         q, r = divmod(nchunks, hilos)
         ultimo = W - (nchunks - 1) * chunk
@@ -583,61 +806,64 @@ def desbalance(csr, prep, kernel, hilos, chunk):
         else:
             maximo = (q + 1) * chunk
         return maximo / prom
-    if kernel == "nodo":
+    if estrategia == "nodo":
         return float(_carga_max_nodo(prep["cunas"], hilos)) / prom
     return float(_carga_max_entrada(csr.offsets, hilos)) / prom
 
 
-def hilos_teoricos(csr, prep, kernel, bloque, max_bloques, chunk):
-    items = {"nodo": csr.n, "entrada": csr.nnz, "balanceado": (prep["W"] + chunk - 1) // chunk}[kernel]
+def hilos_teoricos(csr, prep, estrategia, bloque, max_bloques, chunk):
+    items = {"nodo": csr.n, "combinatorio": csr.n, "entrada": csr.nnz,
+             "balanceado": (prep["W"] + chunk - 1) // chunk}[estrategia]
     return max(1, min(math.ceil(items / bloque), max_bloques)) * bloque
 
 
-def medir_gpu(csr, prep, kernels, conteos, bloque, max_bloques, chunk, reps, censo_ref=None, t_cpu=None,
+def medir_gpu(csr, prep, estrategias, memorias, bloque, max_bloques, chunk, reps, censo_ref=None, t_cpu=None,
               trabajo_max=TRABAJO_POR_LANZAMIENTO):
     filas = []
     censo_gpu = None
-    for kernel in kernels:
-        for conteo in conteos:
-            if not config_valida(conteo, prep["P"]):
-                filas.append({"kernel": kernel, "conteo": conteo, "omitida": f"P = {prep['P']} excede el límite del modo"})
+    for estrategia in estrategias:
+        for memoria in memorias:
+            base = {"estrategia": estrategia, "memoria": memoria, "bloque": bloque}
+            motivo = motivo_invalida(estrategia, memoria, prep)
+            if motivo:
+                filas.append({**base, "omitida": motivo})
                 continue
             libre, _ = memoria_gpu()
-            necesario = bytes_necesarios(csr, prep, kernel, conteo)
+            necesario = bytes_necesarios(csr, prep, estrategia, memoria)
             if libre is not None and necesario > 0.9 * libre:
-                filas.append({"kernel": kernel, "conteo": conteo,
-                              "omitida": f"requiere {necesario / 2**30:.2f} GB y hay {libre / 2**30:.2f} GB libres"})
+                filas.append({**base, "omitida": f"requiere {necesario / 2**30:.2f} GB y hay {libre / 2**30:.2f} GB libres"})
                 continue
-            primera = ejecutar_gpu(csr, prep, kernel, conteo, bloque, max_bloques, chunk, trabajo_max=trabajo_max)
+            primera = ejecutar_gpu(csr, prep, estrategia, memoria, bloque, max_bloques, chunk, trabajo_max=trabajo_max)
             liberar_gpu()
             corridas = []
             for _ in range(reps):
-                corridas.append(ejecutar_gpu(csr, prep, kernel, conteo, bloque, max_bloques, chunk, trabajo_max=trabajo_max))
+                corridas.append(ejecutar_gpu(csr, prep, estrategia, memoria, bloque, max_bloques, chunk,
+                                             trabajo_max=trabajo_max))
                 liberar_gpu()
-            prom = {k: sum(c[k] for c in corridas) / len(corridas) for k in ("t_h2d", "t_kernel", "t_d2h")}
-            total = prom["t_h2d"] + prom["t_kernel"] + prom["t_d2h"]
+            est = {k: sec.estadisticas(c[f"t_{k}"] for c in corridas) for k in ("h2d", "kernel", "d2h")}
+            est["total"] = sec.estadisticas(c["t_h2d"] + c["t_kernel"] + c["t_d2h"] for c in corridas)
             censo = corridas[-1]["censo"]
             if censo_ref is None:
                 censo_ref = censo
-            correcto = censo == censo_ref and sum(censo.values()) == prep["W"]
+            correcto = all(c["censo"] == censo_ref for c in corridas) and sum(censo.values()) == prep["W"]
             censo_gpu = censo_gpu or censo
+            total, calculo = est["total"]["media"], est["kernel"]["media"]
             fila = {
-                "kernel": kernel,
-                "conteo": conteo,
+                **base,
                 "hilos": corridas[-1]["hilos"],
                 "lanzamientos": corridas[-1]["lanzamientos"],
                 "cap_hash": corridas[-1]["cap_hash"],
-                "t_jit_s": max(0.0, primera["t_kernel"] - prom["t_kernel"]),
-                "t_h2d_s": prom["t_h2d"],
-                "t_kernel_s": prom["t_kernel"],
-                "t_kernel_min_s": min(c["t_kernel"] for c in corridas),
-                "t_d2h_s": prom["t_d2h"],
-                "t_total_s": total,
-                "caminos_por_s_kernel": prep["W"] / prom["t_kernel"] if prom["t_kernel"] > 0 else None,
+                "reps": reps,
+                "t_jit_s": max(0.0, primera["t_kernel"] - calculo),
+                **sec.aplanar("t_h2d", est["h2d"]),
+                **sec.aplanar("t_kernel", est["kernel"]),
+                **sec.aplanar("t_d2h", est["d2h"]),
+                **sec.aplanar("t_total", est["total"]),
+                "caminos_por_s_kernel": prep["W"] / calculo if calculo > 0 else None,
                 "speedup_exploracion": None,
                 "speedup_centro": None,
                 "speedup_kernel_centro": None,
-                "desbalance": desbalance(csr, prep, kernel, corridas[-1]["hilos"], chunk),
+                "desbalance": desbalance(csr, prep, estrategia, corridas[-1]["hilos"], chunk),
                 "correcto": bool(correcto),
             }
             if t_cpu:
@@ -645,7 +871,7 @@ def medir_gpu(csr, prep, kernels, conteos, bloque, max_bloques, chunk, reps, cen
                     fila["speedup_exploracion"] = t_cpu["exploracion"] / total
                 if t_cpu.get("centro") and total > 0:
                     fila["speedup_centro"] = t_cpu["centro"] / total
-                    fila["speedup_kernel_centro"] = t_cpu["centro"] / prom["t_kernel"] if prom["t_kernel"] > 0 else None
+                    fila["speedup_kernel_centro"] = t_cpu["centro"] / calculo if calculo > 0 else None
             filas.append(fila)
     return filas, censo_gpu
 
@@ -672,7 +898,7 @@ def medir_secuencial(g, reps):
             censo, _ = metodo(g)
             tiempos.append(time.perf_counter() - t0)
             gc.enable()
-        salida[nombre] = {"censo": censo, "t_prom": sum(tiempos) / len(tiempos), "t_min": min(tiempos)}
+        salida[nombre] = {"censo": censo, "est": sec.estadisticas(tiempos)}
     return salida
 
 
@@ -702,7 +928,7 @@ def verificar_ids(csr, prep, g, bloque=256, max_bloques=4096, chunk=64, trabajo_
 
 
 def crear_parser():
-    p = argparse.ArgumentParser(description="Censo paralelo (CUDA/Numba) de subgrafos de 3 nodos y 2 aristas sobre CSR")
+    p = argparse.ArgumentParser(description="Censo paralelo (CUDA/Numba) de caminos de 3 nodos (no inducidos) sobre CSR")
     p.add_argument("--csr", help="Archivo .npz con el grafo en CSR (offsets, indices, etiqueta_nodo, etiqueta_arista)")
     p.add_argument("--guardar-csr", action="store_true", help="Guarda el CSR usado en un .npz")
     p.add_argument("--grafo", choices=["ejemplo", "triangulo", "estrella", "completo", "aleatorio", "ba"])
@@ -715,11 +941,11 @@ def crear_parser():
     p.add_argument("--etiquetas-nodo", type=int, default=3)
     p.add_argument("--etiquetas-arista", type=int, default=2)
     p.add_argument("--semilla", type=int, default=42)
-    p.add_argument("--kernel", choices=KERNELS + ["todos"], default="todos")
-    p.add_argument("--conteo", choices=list(MODOS) + ["todos"], default="todos")
+    p.add_argument("--estrategia", choices=ESTRATEGIAS + ["todos"], default="todos", help="Reparto del trabajo")
+    p.add_argument("--memoria", choices=list(MEMORIAS) + ["todos"], default="todos", help="Dónde se acumula el histograma")
     p.add_argument("--bloque", type=int, default=256, help="Hilos por bloque")
     p.add_argument("--max-bloques", type=int, default=4096)
-    p.add_argument("--chunk", type=int, default=64, help="Caminos por hilo en el kernel balanceado")
+    p.add_argument("--chunk", type=int, default=64, help="Caminos por hilo en la estrategia balanceado")
     p.add_argument("--trabajo-por-lanzamiento", type=int, default=TRABAJO_POR_LANZAMIENTO,
                    help="Máximo de caminos por lanzamiento de kernel")
     p.add_argument("--reps", type=int, default=3)
@@ -735,19 +961,23 @@ def crear_parser():
 
 
 def imprimir_tabla_gpu(filas):
-    print(f"{'Kernel':<11}{'Conteo':<8}{'Hilos':>9}{'Lanz':>6}{'JIT':>12}{'H2D':>12}{'Kernel':>12}{'D2H+dec':>12}"
-          f"{'Total':>12}{'xExpl':>9}{'xCentro':>10}{'Desbal':>9}  OK")
+    print(f"{'Estrategia':<13}{'Memoria':<8}{'Hilos':>9}{'Lanz':>6}{'JIT':>12}{'H2D':>12}{'Cálculo':>24}{'D2H+dec':>12}"
+          f"{'Total':>24}{'xExpl':>9}{'xCentro':>10}{'Desbal':>9}  OK")
     for f in filas:
         if f.get("omitida"):
-            print(f"{f['kernel']:<11}{f['conteo']:<8}  omitida: {f['omitida']}")
+            print(f"{f['estrategia']:<13}{f['memoria']:<8}  omitida: {f['omitida']}")
             continue
         xe = f"{f['speedup_exploracion']:.2f}" if f["speedup_exploracion"] else "-"
         xc = f"{f['speedup_centro']:.2f}" if f["speedup_centro"] else "-"
-        print(f"{f['kernel']:<11}{f['conteo']:<8}{f['hilos']:>9}{f['lanzamientos']:>6}{sec.seg(f['t_jit_s']):>12}"
-              f"{sec.seg(f['t_h2d_s']):>12}{sec.seg(f['t_kernel_s']):>12}{sec.seg(f['t_d2h_s']):>12}"
-              f"{sec.seg(f['t_total_s']):>12}{xe:>9}{xc:>10}{f['desbalance']:>9.2f}  {'sí' if f['correcto'] else 'NO'}")
-    print("xExpl / xCentro: aceleración del tiempo total (H2D + kernel + D2H) sobre cada método secuencial")
-    print("Desbal: trabajo del hilo más cargado / trabajo promedio por hilo (1.00 = perfecto)")
+        des = f"{f['desbalance']:.2f}" if f["desbalance"] is not None else "-"
+        calc = f"{sec.seg(f['t_kernel_s'])} ± {sec.seg(f['t_kernel_desv_s'])}"
+        total = f"{sec.seg(f['t_total_s'])} ± {sec.seg(f['t_total_desv_s'])}"
+        print(f"{f['estrategia']:<13}{f['memoria']:<8}{f['hilos']:>9}{f['lanzamientos']:>6}{sec.seg(f['t_jit_s']):>12}"
+              f"{sec.seg(f['t_h2d_s']):>12}{calc:>24}{sec.seg(f['t_d2h_s']):>12}"
+              f"{total:>24}{xe:>9}{xc:>10}{des:>9}  {'sí' if f['correcto'] else 'NO'}")
+    print("Tiempos: media ± desviación de las repeticiones, tras 1 ejecución de calentamiento")
+    print("xExpl / xCentro: aceleración del tiempo total medio (H2D + cálculo + D2H) sobre la media de cada método secuencial")
+    print("Desbal: trabajo del hilo más cargado / trabajo promedio por hilo (1.00 = perfecto; '-' = no modelado)")
 
 
 def imprimir_reporte(r, top):
@@ -761,9 +991,9 @@ def imprimir_reporte(r, top):
 
     s = r["secuencial"]
     if s:
-        print("\n=== SECUENCIAL (CPU) ===")
+        print("\n=== SECUENCIAL (CPU, Python) ===")
         for nombre, d in s.items():
-            print(f"{nombre:>12}: prom {sec.seg(d['t_prom_s'])} | min {sec.seg(d['t_min_s'])}")
+            print(f"{nombre:>12}: media {sec.seg(d['t_s'])} ± {sec.seg(d['t_desv_s'])} | mín {sec.seg(d['t_min_s'])}")
 
     print("\n=== PARALELO (GPU) ===")
     imprimir_tabla_gpu(r["gpu"])
@@ -809,11 +1039,11 @@ def main():
 
     secuencial = medir_secuencial(g, args.reps) if not args.sin_secuencial else None
     censo_ref = secuencial["centro"]["censo"] if secuencial else None
-    t_cpu = {k: v["t_prom"] for k, v in secuencial.items()} if secuencial else None
+    t_cpu = {k: v["est"]["media"] for k, v in secuencial.items()} if secuencial else None
 
-    kernels = KERNELS if args.kernel == "todos" else [args.kernel]
-    conteos = list(MODOS) if args.conteo == "todos" else [args.conteo]
-    filas_gpu, censo_gpu = medir_gpu(csr, prep, kernels, conteos, args.bloque, args.max_bloques, args.chunk,
+    estrategias = ESTRATEGIAS if args.estrategia == "todos" else [args.estrategia]
+    memorias = list(MEMORIAS) if args.memoria == "todos" else [args.memoria]
+    filas_gpu, censo_gpu = medir_gpu(csr, prep, estrategias, memorias, args.bloque, args.max_bloques, args.chunk,
                                      args.reps, censo_ref, t_cpu, args.trabajo_por_lanzamiento)
 
     verificacion = None
@@ -830,7 +1060,7 @@ def main():
             "nodos": csr.n,
             "aristas": csr.nnz // 2,
             "nnz": csr.nnz,
-            "grado_max": int(prep["grados"].max()) if csr.n else 0,
+            "grado_max": prep["grado_max"],
             "W": W,
             "L": prep["L"],
             "E": prep["E"],
@@ -840,7 +1070,7 @@ def main():
             "transacciones": g.num_transacciones if g is not None else 1,
             **(sec.analizar_conexidad(g) if g is not None else conexidad_csr(csr)),
         },
-        "secuencial": {k: {"t_prom_s": v["t_prom"], "t_min_s": v["t_min"]} for k, v in secuencial.items()} if secuencial else None,
+        "secuencial": {k: sec.aplanar("t", v["est"]) for k, v in secuencial.items()} if secuencial else None,
         "secuenciales_coinciden": secuencial["exploracion"]["censo"] == secuencial["centro"]["censo"] if secuencial else None,
         "gpu": filas_gpu,
         "verificacion_ids": verificacion,

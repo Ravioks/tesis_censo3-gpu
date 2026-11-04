@@ -56,9 +56,22 @@ def clave_patron(g, centro, extremo1, eid1, extremo2, eid2):
     return (g.etiqueta_nodo[centro],) + tuple(sorted((rama1, rama2)))
 
 
+def clave_triangulo(g, u, v, w, e_uv, e_uw, e_vw):
+    return tuple(sorted((
+        (g.aristas[e_vw][2], g.etiqueta_nodo[u]),
+        (g.aristas[e_uw][2], g.etiqueta_nodo[v]),
+        (g.aristas[e_uv][2], g.etiqueta_nodo[w]),
+    )))
+
+
 def formato_patron(clave):
     lc, (le1, l1), (le2, l2) = clave
     return f"{l1} -[{le1}]- {lc} -[{le2}]- {l2}"
+
+
+def formato_triangulo(clave):
+    (e1, l1), (e2, l2), (e3, l3) = clave
+    return f"{l1} -[{e3}]- {l2} -[{e1}]- {l3} -[{e2}]- {l1}"
 
 
 def formato_nodo(n):
@@ -218,6 +231,65 @@ def calcular_soporte(g):
                 w, e2 = vecinos[j]
                 soporte[clave_patron(g, c, v, e1, w, e2)].add(t)
     return {k: len(s) for k, s in soporte.items()}
+
+
+def censo_triangulos(g):
+    orden = {nid: i for i, nid in enumerate(g.etiqueta_nodo)}
+    vecinos = {n: dict(ady) for n, ady in g.adyacencia.items()}
+    triangulos = defaultdict(int)
+    resta = defaultdict(int)
+    for u, v, _ in g.aristas:
+        if orden[u] > orden[v]:
+            u, v = v, u
+        nu, nv = vecinos[u], vecinos[v]
+        if len(nu) > len(nv):
+            comunes = [w for w in nv if w in nu]
+        else:
+            comunes = [w for w in nu if w in nv]
+        e_uv = nu[v]
+        for w in comunes:
+            if orden[w] <= orden[v]:
+                continue
+            e_uw, e_vw = nu[w], nv[w]
+            triangulos[clave_triangulo(g, u, v, w, e_uv, e_uw, e_vw)] += 1
+            resta[clave_patron(g, u, v, e_uv, w, e_uw)] += 1
+            resta[clave_patron(g, v, u, e_uv, w, e_vw)] += 1
+            resta[clave_patron(g, w, u, e_uw, v, e_vw)] += 1
+    return dict(triangulos), dict(resta)
+
+
+def resta_desde_triangulos(triangulos):
+    resta = defaultdict(int)
+    for clave, cant in triangulos.items():
+        for i in range(3):
+            j, k = (x for x in range(3) if x != i)
+            (_, n_i), (e_j, n_j), (e_k, n_k) = clave[i], clave[j], clave[k]
+            resta[(n_i,) + tuple(sorted(((e_k, n_j), (e_j, n_k))))] += cant
+    return dict(resta)
+
+
+def censo_inducido(no_inducido, resta):
+    inducido = {}
+    for clave, cant in no_inducido.items():
+        quedan = cant - resta.get(clave, 0)
+        if quedan < 0:
+            raise ValueError(f"Conteo inducido negativo para {formato_patron(clave)}")
+        if quedan:
+            inducido[clave] = quedan
+    sobrantes = set(resta) - set(no_inducido)
+    if sobrantes:
+        raise ValueError(f"{len(sobrantes)} patrones de la resta no existen en el censo no inducido")
+    return inducido
+
+
+def censo_completo(g):
+    no_inducido, _ = censo_centro(g)
+    triangulos, resta = censo_triangulos(g)
+    return {
+        "caminos_no_inducidos": no_inducido,
+        "caminos_inducidos": censo_inducido(no_inducido, resta),
+        "triangulos": triangulos,
+    }
 
 
 def contar_triangulos(g):
@@ -418,16 +490,40 @@ def construir_grafo(a):
     return generar_ba(a.n, a.k, rng, en, ea)
 
 
-def armar_resultado(g, est, args, t_construccion, censo, info, tiempos, pico, soporte, comparacion):
+def armar_resultado(g, est, args, t_construccion, censo, info, tiempos, pico, soporte, comparacion, tri=None):
     total = sum(censo.values())
-    tri = est["triangulos"]
     unicos = info["generados"] - info["descartados"]
+    inducido = tri["caminos_inducidos"] if tri else None
     filas = []
     for clave, freq in sorted(censo.items(), key=lambda x: (-x[1], formato_patron(x[0]))):
         fila = {"patron": formato_patron(clave), "frecuencia": freq, "porcentaje": 100 * freq / total if total else 0.0}
+        if inducido is not None:
+            fila["inducido"] = inducido.get(clave, 0)
         if soporte is not None:
             fila["soporte"] = soporte.get(clave, 0)
         filas.append(fila)
+    filas_tri = []
+    if tri:
+        total_tri = sum(tri["triangulos"].values())
+        for clave, freq in sorted(tri["triangulos"].items(), key=lambda x: (-x[1], formato_triangulo(x[0]))):
+            filas_tri.append({"patron": formato_triangulo(clave), "frecuencia": freq,
+                              "porcentaje": 100 * freq / total_tri if total_tri else 0.0})
+    conteo = {
+        "no_inducido": total,
+        "caminos_en_triangulos": 3 * est["triangulos"],
+        "inducido": total - 3 * est["triangulos"],
+        "triangulos": est["triangulos"],
+        "patrones_distintos": len(censo),
+        "patrones_frecuencia_1": sum(1 for f in censo.values() if f == 1),
+    }
+    if tri:
+        conteo.update({
+            "t_triangulos_s": tri["t_s"],
+            "patrones_triangulo": len(tri["triangulos"]),
+            "patrones_inducidos": len(inducido),
+            "inducido_por_patron_ok": sum(inducido.values()) == total - 3 * est["triangulos"],
+            "triangulos_por_patron_ok": sum(tri["triangulos"].values()) == est["triangulos"],
+        })
     ejecucion = {"metodo": args.metodo, "t_construccion_s": t_construccion}
     ejecucion.update(resumen_tiempos(tiempos, unicos, pico))
     return {
@@ -442,14 +538,9 @@ def armar_resultado(g, est, args, t_construccion, censo, info, tiempos, pico, so
             "tam_hash_ids": info["tam_hash_ids"],
             "validacion_ok": total == est["caminos_esperados"],
         },
-        "conteo": {
-            "no_inducido": total,
-            "caminos_en_triangulos": 3 * tri,
-            "inducido": total - 3 * tri,
-            "patrones_distintos": len(censo),
-            "patrones_frecuencia_1": sum(1 for f in censo.values() if f == 1),
-        },
+        "conteo": conteo,
         "censo": filas,
+        "triangulos": filas_tri,
         "hubs": nodos_hub(g, args.hubs, est["caminos_esperados"]),
         "comparacion": comparacion,
     }
@@ -457,6 +548,22 @@ def armar_resultado(g, est, args, t_construccion, censo, info, tiempos, pico, so
 
 def seg(t):
     return f"{t * 1000:.3f} ms" if t < 1 else f"{t:.3f} s"
+
+
+def estadisticas(valores):
+    v = [float(x) for x in valores]
+    return {"media": statistics.fmean(v), "desv": statistics.pstdev(v) if len(v) > 1 else 0.0,
+            "min": min(v), "max": max(v), "n": len(v)}
+
+
+def aplanar(prefijo, est):
+    return {f"{prefijo}_s": est["media"], f"{prefijo}_desv_s": est["desv"], f"{prefijo}_min_s": est["min"]}
+
+
+def seg_est(est):
+    if est["n"] < 2:
+        return seg(est["media"])
+    return f"{seg(est['media'])} ± {seg(est['desv'])}"
 
 
 def imprimir_reporte(r, top, min_freq):
@@ -488,20 +595,36 @@ def imprimir_reporte(r, top, min_freq):
     print(f"Validación contra Σ C(grado,2) = {gr['caminos_esperados']}: {'OK' if ex['validacion_ok'] else 'ERROR'}")
 
     print("\n=== CONTEO ===")
-    print(f"No inducido: {co['no_inducido']} | en triángulos: {co['caminos_en_triangulos']} | inducido: {co['inducido']}")
-    print(f"Patrones distintos: {co['patrones_distintos']} | patrones con frecuencia 1: {co['patrones_frecuencia_1']}")
+    print(f"Caminos no inducidos: {co['no_inducido']} | en triángulos: {co['caminos_en_triangulos']} | "
+          f"caminos inducidos: {co['inducido']} | triángulos: {co['triangulos']}")
+    print(f"Patrones de camino: {co['patrones_distintos']} | con frecuencia 1: {co['patrones_frecuencia_1']}")
+    if "patrones_triangulo" in co:
+        print(f"Censo de triángulos por patrón: {seg(co['t_triangulos_s'])} | patrones de triángulo: {co['patrones_triangulo']} | "
+              f"patrones de camino inducido: {co['patrones_inducidos']}")
+        print(f"Σ inducido por patrón = no inducido − 3·triángulos: {'OK' if co['inducido_por_patron_ok'] else 'ERROR'} | "
+              f"Σ triángulos por patrón = triángulos: {'OK' if co['triangulos_por_patron_ok'] else 'ERROR'}")
 
     filas = [f for f in r["censo"] if f["frecuencia"] >= min_freq]
     mostradas = filas[:top] if top else filas
-    print(f"\n=== CENSO (mostrando {len(mostradas)} de {len(filas)} con frecuencia >= {min_freq}) ===")
+    print(f"\n=== CENSO DE CAMINOS (mostrando {len(mostradas)} de {len(filas)} con frecuencia >= {min_freq}) ===")
     if mostradas:
         ancho = max(len("Patrón"), max(len(f["patron"]) for f in mostradas))
         con_soporte = "soporte" in mostradas[0]
-        encabezado = f"{'#':>4}  {'Patrón':<{ancho}}  {'Frecuencia':>10}  {'%':>7}"
-        print(encabezado + (f"  {'Soporte':>8}" if con_soporte else ""))
+        con_inducido = "inducido" in mostradas[0]
+        encabezado = f"{'#':>4}  {'Patrón':<{ancho}}  {'No inducido':>12}  {'%':>7}"
+        print(encabezado + (f"  {'Inducido':>12}" if con_inducido else "") + (f"  {'Soporte':>8}" if con_soporte else ""))
         for i, f in enumerate(mostradas, 1):
-            linea = f"{i:>4}  {f['patron']:<{ancho}}  {f['frecuencia']:>10}  {f['porcentaje']:>6.2f}%"
+            linea = f"{i:>4}  {f['patron']:<{ancho}}  {f['frecuencia']:>12}  {f['porcentaje']:>6.2f}%"
+            linea += f"  {f['inducido']:>12}" if con_inducido else ""
             print(linea + (f"  {f['soporte']:>8}" if con_soporte else ""))
+
+    tri = r["triangulos"][:top] if top else r["triangulos"]
+    if tri:
+        print(f"\n=== CENSO DE TRIÁNGULOS (mostrando {len(tri)} de {len(r['triangulos'])}) ===")
+        ancho = max(len("Patrón"), max(len(f["patron"]) for f in tri))
+        print(f"{'#':>4}  {'Patrón':<{ancho}}  {'Frecuencia':>12}  {'%':>7}")
+        for i, f in enumerate(tri, 1):
+            print(f"{i:>4}  {f['patron']:<{ancho}}  {f['frecuencia']:>12}  {f['porcentaje']:>6.2f}%")
 
     if r["hubs"]:
         print("\n=== NODOS QUE MÁS APORTAN ===")
@@ -518,7 +641,7 @@ def imprimir_reporte(r, top, min_freq):
 
 
 def crear_parser():
-    p = argparse.ArgumentParser(description="Censo de subgrafos de 3 nodos y 2 aristas (conteo no inducido)")
+    p = argparse.ArgumentParser(description="Censo de subgrafos de 3 nodos: caminos (inducidos y no inducidos) y triángulos")
     p.add_argument("--grafo", choices=["ejemplo", "triangulo", "estrella", "completo", "aleatorio", "ba"])
     p.add_argument("--archivo", help="Archivo en formato gSpan (t/v/e)")
     p.add_argument("--ids", nargs="+", help="IDs de transacciones a cargar del archivo")
@@ -536,6 +659,8 @@ def crear_parser():
     p.add_argument("--top", type=int, default=20, help="Filas del censo a mostrar (0 = todas)")
     p.add_argument("--min-freq", type=int, default=1)
     p.add_argument("--hubs", type=int, default=5)
+    p.add_argument("--sin-triangulos", action="store_true",
+                   help="No calcula el censo de triángulos ni el inducido por patrón (grafos grandes)")
     p.add_argument("--json", action="store_true", help="Exporta el resultado completo a JSON")
     p.add_argument("--dibujar", action="store_true", help="Guarda un dibujo del grafo (.png)")
     p.add_argument("--salida", default="resultados", help="Carpeta para los archivos generados")
@@ -629,7 +754,14 @@ def main():
             "aceleracion_centro": t["exploracion"] / t["centro"] if t["centro"] > 0 else 0.0,
         }
 
-    resultado = armar_resultado(g, est, args, t_construccion, censo, info, tiempos, pico, soporte, comparacion)
+    tri = None
+    if not args.sin_triangulos:
+        t0 = time.perf_counter()
+        triangulos, resta = censo_triangulos(g)
+        tri = {"triangulos": triangulos, "caminos_inducidos": censo_inducido(censo, resta),
+               "t_s": time.perf_counter() - t0}
+
+    resultado = armar_resultado(g, est, args, t_construccion, censo, info, tiempos, pico, soporte, comparacion, tri)
     imprimir_reporte(resultado, args.top, args.min_freq)
 
     generados = []

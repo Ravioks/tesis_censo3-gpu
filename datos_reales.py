@@ -16,6 +16,7 @@ DATASETS = {
         "pagina": "https://snap.stanford.edu/data/com-LiveJournal.html",
         "nodos": 3_997_962,
         "aristas": 34_681_189,
+        "triangulos": 177_820_130,
     },
     "orkut": {
         "nombre": "com-Orkut",
@@ -24,6 +25,7 @@ DATASETS = {
         "pagina": "https://snap.stanford.edu/data/com-Orkut.html",
         "nodos": 3_072_441,
         "aristas": 117_185_083,
+        "triangulos": 627_584_181,
     },
     "twitter": {
         "nombre": "ego-Twitter",
@@ -32,6 +34,7 @@ DATASETS = {
         "pagina": "https://snap.stanford.edu/data/ego-Twitter.html",
         "nodos": None,
         "aristas": None,
+        "triangulos": None,
     },
 }
 
