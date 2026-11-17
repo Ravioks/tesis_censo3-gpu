@@ -349,7 +349,8 @@ def main():
     grafo = {"nombre": csr.nombre, "nodos": csr.n, "aristas": csr.nnz // 2, "grado_max": prep["grado_max"],
              "W": prep["W"], "L": prep["L"], "E": prep["E"],
              "P_caminos": prep["P"], "P_triangulos": tri.espacio_triangulos(prep)}
-    datos = {"grafo": grafo, "opciones": {k: v for k, v in vars(a).items()}, "referencia": desc_ref,
+    datos = {"grafo": grafo, "commit": sec.commit_actual(), "opciones": {k: v for k, v in vars(a).items()},
+             "referencia": desc_ref,
              "t_referencia_s": t_ref, "filas": r["filas"], "mejor_caminos": r["mejor_caminos"],
              "mejor_triangulos": r["mejor_triangulos"], "config": r["config"],
              "completo": {k: v for k, v in comp.items() if k != "est"} if comp else None,

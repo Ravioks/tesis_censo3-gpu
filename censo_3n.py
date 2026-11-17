@@ -359,14 +359,16 @@ def main():
     gpu.cuda.synchronize()
     kw = dict(max_bloques=a.max_bloques, trabajo_max=a.trabajo_por_lanzamiento, preproceso=a.preproceso)
     t0 = time.perf_counter()
-    censo3(csr, pre, cfg, **kw)
-    t_jit = time.perf_counter() - t0
+    primera = censo3(csr, pre, cfg, **kw)
+    t_primera = time.perf_counter() - t0
     corridas = [censo3(csr, None, cfg, **kw) for _ in range(a.reps)]
     res = corridas[-1]
     est = estadisticas_corridas(corridas)
+    t_jit = max(0.0, primera["tiempos"]["extremo_s"] - est["extremo"]["media"])
     print(f"Aristas orientadas {res['aristas_orientadas']:,} | grado de salida máx. {res['grado_salida_max']:,}")
 
-    print(f"\n=== TIEMPOS (media ± desviación de {a.reps} repeticiones; calentamiento con JIT: {sec.seg(t_jit)}) ===")
+    print(f"\n=== TIEMPOS (media ± desviación de {a.reps} repeticiones; primera ejecución: {sec.seg(t_primera)}, "
+          f"exceso por JIT sobre la media: {sec.seg(t_jit)}) ===")
     vacio = ""
     print(f"{'Fase':<38}{'H2D':>26}{'Cálculo (kernel)':>26}{'D2H + decodificación':>26}{'Total':>26}{'Lanz.':>7}")
     print(f"{'Preproceso CPU':<38}{vacio:>78}{sec.seg_est(est['preproceso_cpu']):>26}")
@@ -424,11 +426,14 @@ def main():
         if a.json:
             sec.guardar_json({
                 "grafo": {"nombre": csr.nombre, "nodos": csr.n, "aristas": csr.nnz // 2, "grado_max": prep["grado_max"],
+                          "grado_salida_max": res["grado_salida_max"], "aristas_orientadas": res["aristas_orientadas"],
                           "L": prep["L"], "E": prep["E"], "P_caminos": prep["P"],
                           "P_triangulos": tri.espacio_triangulos(prep), "t_carga_s": t_carga},
+                "commit": sec.commit_actual(),
                 "config": cfg,
                 "preproceso": a.preproceso,
                 "reps": a.reps,
+                "t_primera_s": t_primera,
                 "t_jit_s": t_jit,
                 "tiempos": {k: sec.aplanar("t", v) for k, v in est.items()},
                 "lanzamientos": {p: res["tiempos"][p]["lanzamientos"] for p in ("caminos", "triangulos")},

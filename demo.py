@@ -224,6 +224,13 @@ def describir_entorno(usar_gpu):
             d["cuda_driver"] = f"{v[0]}.{v[1]}"
         except Exception:
             pass
+        try:
+            import subprocess
+            d["driver_nvidia"] = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                                                capture_output=True, text=True, timeout=10).stdout.strip() or None
+        except Exception:
+            d["driver_nvidia"] = None
+    d["commit"] = sec.commit_actual()
     return d
 
 
@@ -443,6 +450,19 @@ def comparar_cpu_gpu(inf, csr, g, p, estado, usar_gpu, reps_1hilo):
             principal = modo == p.preproceso
             filas[f"GPU · {texto_config(cfg)} · prep. {modo}"] = {
                 "tipo": "gpu" if principal else "gpu_alt", "preproceso": modo,
+                "est": {"caminos_s": est["caminos_total"], "triangulos_s": est["triangulos_total"],
+                        "censo_s": est["censo"], "extremo_s": est["extremo"], "calculo_s": est["calculo"],
+                        "preparacion_s": est["preparacion"]},
+                "igual": all(c3.censos_iguales(c, ref) for c in corridas)}
+        for extra in p.gpu_extra:
+            if extra == cfg["estrategia_caminos"]:
+                continue
+            cfg_e = config_valida_para(dict(cfg, estrategia_caminos=extra), prep)
+            if cfg_e["estrategia_caminos"] != extra:
+                continue
+            r, est, corridas = medir_gpu_completo(csr, pre, cfg_e, p, p.reps)
+            filas[f"GPU · {texto_config(cfg_e)} · prep. {p.preproceso}"] = {
+                "tipo": "gpu_extra", "preproceso": p.preproceso,
                 "est": {"caminos_s": est["caminos_total"], "triangulos_s": est["triangulos_total"],
                         "censo_s": est["censo"], "extremo_s": est["extremo"], "calculo_s": est["calculo"],
                         "preparacion_s": est["preparacion"]},
@@ -748,6 +768,8 @@ def crear_parser():
                                     "escalabilidad")
     p.add_argument("--preproceso", choices=["gpu", "cpu"], default="gpu",
                    help="Preproceso de la configuración principal (en CPU vs GPU también se mide el otro)")
+    p.add_argument("--gpu-extra", nargs="+", default=[], choices=["nodo", "entrada", "balanceado", "combinatorio"],
+                   help="Estrategias de caminos GPU adicionales en CPU vs GPU, medidas en la misma sesión")
     p.add_argument("--sin-gpu", action="store_true", help="Ejecuta solo la parte de CPU")
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--etiquetas-nodo", type=int, default=5, help="Etiquetas de nodo para el grafo real")

@@ -184,6 +184,20 @@ def guardar_json(resultado, ruta):
         json.dump(resultado, f, ensure_ascii=False, indent=2)
 
 
+def commit_actual():
+    import subprocess
+    raiz = os.path.dirname(os.path.abspath(__file__))
+    try:
+        h = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=raiz, timeout=5)
+        s = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True,
+                           cwd=raiz, timeout=5)
+        if h.returncode != 0:
+            return None
+        return h.stdout.strip() + ("-sucio" if s.stdout.strip() else "")
+    except Exception:
+        return None
+
+
 def censo_exploracion(g):
     censo = defaultdict(int)
     vistos = set()
