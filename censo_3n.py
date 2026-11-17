@@ -359,12 +359,12 @@ def main():
     gpu.cuda.synchronize()
     kw = dict(max_bloques=a.max_bloques, trabajo_max=a.trabajo_por_lanzamiento, preproceso=a.preproceso)
     t0 = time.perf_counter()
-    primera = censo3(csr, pre, cfg, **kw)
+    extremo_primera = censo3(csr, pre, cfg, **kw)["tiempos"]["extremo_s"]
     t_primera = time.perf_counter() - t0
     corridas = [censo3(csr, None, cfg, **kw) for _ in range(a.reps)]
     res = corridas[-1]
     est = estadisticas_corridas(corridas)
-    t_jit = max(0.0, primera["tiempos"]["extremo_s"] - est["extremo"]["media"])
+    t_jit = max(0.0, extremo_primera - est["extremo"]["media"])
     print(f"Aristas orientadas {res['aristas_orientadas']:,} | grado de salida máx. {res['grado_salida_max']:,}")
 
     print(f"\n=== TIEMPOS (media ± desviación de {a.reps} repeticiones; primera ejecución: {sec.seg(t_primera)}, "

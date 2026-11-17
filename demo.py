@@ -236,7 +236,7 @@ def describir_entorno(usar_gpu):
 
 def config_valida_para(cfg, prep):
     cfg = dict(cfg)
-    if gpu.motivo_invalida(cfg["estrategia_caminos"], cfg["memoria_caminos"] or "hash", prep):
+    if gpu.motivo_invalida(cfg["estrategia_caminos"], "hash", prep):
         cfg["estrategia_caminos"] = c3.CONFIG_POR_DEFECTO["estrategia_caminos"]
     if cfg["memoria_caminos"] and gpu.motivo_invalida(cfg["estrategia_caminos"], cfg["memoria_caminos"], prep):
         cfg["memoria_caminos"] = None
@@ -285,10 +285,14 @@ def exp_validacion(inf, escala, usar_gpu, p, estado):
         csr = gpu.grafo_a_csr(g)
         pre = c3.preparar(csr)
         prep = pre["prep"]
-        njit_ok = sum(c3.censos_iguales(cpu.censo3_njit(csr, pre, paralelo=par, estrategia_caminos=e), ref)
-                      for par in (False, True) for e in cpu.ESTRATEGIAS_CAMINOS)
+        try:
+            njit_ok = sum(c3.censos_iguales(cpu.censo3_njit(csr, pre, paralelo=par, estrategia_caminos=e), ref)
+                          for par in (False, True) for e in cpu.ESTRATEGIAS_CAMINOS)
+            txt_njit = f"{njit_ok}/4"
+        except ValueError:
+            txt_njit = "no aplica (histograma denso)"
         fila = {"grafo": g.nombre, "W": W, "T": T, "L": prep["L"], "E": prep["E"], "P": prep["P"],
-                "invariantes": inv_ok, "exploracion_igual_centro": expl_ok, "njit": f"{njit_ok}/4"}
+                "invariantes": inv_ok, "exploracion_igual_centro": expl_ok, "njit": txt_njit}
         txt_c = txt_t = completo = ids = "-"
         if usar_gpu:
             ok = total = 0
