@@ -211,7 +211,7 @@ def agregar_args_grafo(p):
     g.add_argument("--grafo", choices=["ejemplo", "triangulo", "estrella", "completo", "aleatorio", "ba"])
     g.add_argument("--archivo", help="Archivo gSpan (t/v/e)")
     g.add_argument("--csr", help="Archivo .npz en CSR")
-    g.add_argument("--dataset", choices=["livejournal", "orkut", "twitter"])
+    g.add_argument("--dataset", choices=["livejournal", "orkut", "twitter", "ogbn-mag", "ogbn-products"])
     g.add_argument("--datos", default="datasets", help="Carpeta de descargas y caché de grafos reales")
     g.add_argument("--ids", nargs="+")
     g.add_argument("--max-grafos", type=int, default=None)

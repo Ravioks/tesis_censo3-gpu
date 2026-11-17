@@ -580,9 +580,13 @@ def exp_real(inf, clave, usar_gpu, p, estado, carpeta):
     import datos_reales as dr
 
     info = dr.DATASETS[clave]
-    inf.titulo(f"6. Grafo real masivo: {info['nombre']} (SNAP)")
-    inf.texto(f"Fuente: {info['pagina']}\nLos grafos de SNAP no traen etiquetas: se asignan {p.etiquetas_nodo} etiquetas "
-              f"de nodo y {p.etiquetas_arista} de arista al azar (uniformes, semilla {p.semilla}).")
+    inf.titulo(f"6. Grafo real masivo: {info['nombre']} ({'OGB' if info.get('ogb') else 'SNAP'})")
+    if info.get("ogb"):
+        inf.texto(f"Fuente: {info['pagina']}\nEtiquetas reales del dataset; el grafo se simetriza y se eliminan lazos y "
+                  "aristas repetidas.")
+    else:
+        inf.texto(f"Fuente: {info['pagina']}\nLos grafos de SNAP no traen etiquetas: se asignan {p.etiquetas_nodo} "
+                  f"etiquetas de nodo y {p.etiquetas_arista} de arista al azar (uniformes, semilla {p.semilla}).")
     csr, tiempos, meta = dr.cargar_dataset(clave, p.etiquetas_nodo, p.etiquetas_arista, p.semilla, p.datos)
     for k, v in tiempos.items():
         inf.texto(f"- {k.replace('_s', '').replace('_', ' ')}: {sec.seg(v)}")
@@ -765,7 +769,8 @@ def crear_parser():
                         "el simulador)")
     p.add_argument("--rapido", action="store_true", help="Atajo de --escala rapida")
     p.add_argument("--solo", nargs="+", choices=EXPERIMENTOS, default=None, help="Corre solo estos experimentos")
-    p.add_argument("--dataset", choices=["livejournal", "orkut", "twitter", "ninguno"], default=None,
+    p.add_argument("--dataset", choices=["livejournal", "orkut", "twitter", "ogbn-mag", "ogbn-products", "ninguno"],
+                   default=None,
                    help="Grafo real para el experimento 6 (por defecto livejournal en escala completa)")
     p.add_argument("--sin-barrido-real", action="store_true", help="No hace el barrido de configuraciones en el grafo real")
     p.add_argument("--config", help="JSON de configuración GPU (mejor_config.json); fija la configuración base y la de "
