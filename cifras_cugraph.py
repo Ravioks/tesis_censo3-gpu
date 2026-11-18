@@ -30,12 +30,13 @@ def cifras(res):
         h = modos.get("host", {})
         g = modos.get("cugraph", {})
         c = modos.get("cudf", {})
+        gd = modos.get("cugraph_dirigido", {})
         if "tiempos" in h:
             m[p + "HostCarga"] = ms(media(h, "carga"))
             m[p + "HostPreparacion"] = ms(media(h, "preparacion"))
             m[p + "HostCenso"] = ms(media(h, "censo"))
             m[p + "HostExtremo"] = ms(media(h, "extremo"))
-        for clave, b in (("Grafo", g), ("Tabla", c)):
+        for clave, b in (("Grafo", g), ("Tabla", c), ("GrafoDir", gd)):
             if "tiempos" not in b:
                 continue
             m[p + clave + "Adaptador"] = ms(media(b, "adaptador"))
@@ -48,6 +49,7 @@ def cifras(res):
                 m[p + clave + "Ahorro"] = ms(media(h, "extremo") - media(b, "extremo"))
             a = b.get("adaptador") or {}
             m[p + clave + "Reordenado"] = "yes" if a.get("reordenado") else "no"
+            m[p + clave + "Simetrizado"] = "yes" if a.get("simetrizado") else "no"
         e = d.get("extra", {})
         if "construccion_cugraph_s" in e:
             m[p + "Construccion"] = ms(e["construccion_cugraph_s"])

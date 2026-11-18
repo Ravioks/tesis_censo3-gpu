@@ -150,6 +150,35 @@ def test_desde_tabla_de_aristas_igual_oraculo(g):
     assert c3.censos_iguales(res, sec.censo_completo(g))
 
 
+class GrafoFalso:
+    def __init__(self, csr, solo_superior):
+        fila = np.repeat(np.arange(csr.n), np.diff(csr.offsets))
+        sel = fila < csr.indices if solo_superior else np.ones(csr.nnz, dtype=bool)
+        m = xp()
+        self.vista = (m.asarray(np.concatenate([[0], np.cumsum(np.bincount(fila[sel], minlength=csr.n))]).astype(np.int32)),
+                      m.asarray(csr.indices[sel].astype(np.int32)), m.asarray(csr.et_arista[sel].astype(np.float32)))
+
+    def view_adj_list(self):
+        return self.vista
+
+    def is_renumbered(self):
+        return False
+
+
+@sin_gpu
+@pytest.mark.parametrize("solo_superior", [True, False], ids=["triangulo_superior", "simetrica"])
+@pytest.mark.parametrize("g", grafos()[3:], ids=lambda g: g.nombre)
+def test_desde_cugraph_con_vista_simulada(g, solo_superior):
+    csr = gpu.grafo_a_csr(g)
+    entrada = ad.desde_cugraph(GrafoFalso(csr, solo_superior), xp().asarray(csr.et_nodo), csr.nombres_nodo,
+                               csr.nombres_arista, csr.nombre, max_bloques=4)
+    assert entrada["info"]["simetrizado"] == solo_superior
+    assert entrada["info"]["nnz"] == csr.nnz
+    assert np.array_equal(entrada["csr"].offsets, csr.offsets)
+    res = ad.censo3_residente(entrada, **LANZAMIENTO)
+    assert c3.censos_iguales(res, sec.censo_completo(g))
+
+
 def grafo_cugraph(csr, renumerar=False):
     import cugraph
     a, b, e = aristas_superiores(csr)
@@ -169,6 +198,21 @@ def test_desde_cugraph_igual_oraculo(g):
     assert entrada["info"]["nnz"] == csr.nnz
     res = ad.censo3_residente(entrada, **LANZAMIENTO)
     assert c3.censos_iguales(res, sec.censo_completo(g))
+
+
+@sin_cugraph
+@pytest.mark.xfail(strict=False, reason="la vista de un grafo dirigido no está documentada en cuGraph")
+def test_desde_cugraph_dirigido_simetrico_sin_simetrizar():
+    import cugraph
+    g = grafos_base()[4]
+    csr = gpu.grafo_a_csr(g)
+    fila = np.repeat(np.arange(csr.n, dtype=np.int32), np.diff(csr.offsets))
+    df = tabla({"src": fila, "dst": csr.indices.astype(np.int32), "etiqueta": csr.et_arista.astype(np.float32)})
+    G = cugraph.Graph(directed=True)
+    G.from_cudf_edgelist(df, source="src", destination="dst", edge_attr="etiqueta", renumber=False)
+    entrada = ad.desde_cugraph(G, xp().asarray(csr.et_nodo), csr.nombres_nodo, csr.nombres_arista, max_bloques=4)
+    assert not entrada["info"]["simetrizado"]
+    assert c3.censos_iguales(ad.censo3_residente(entrada, **LANZAMIENTO), sec.censo_completo(g))
 
 
 @sin_cugraph

@@ -170,47 +170,44 @@ def desde_arreglos(offsets, indices, et_nodo, et_arista, nombres_nodo, nombres_a
             "t_adaptador_s": t}
 
 
-def desde_cudf(df, et_nodo, nombres_nodo, nombres_arista, origen="src", destino="dst", etiqueta=None,
-               nombre="cudf", max_bloques=4096):
-    xp = modulo_arreglos()
-    sincronizar()
-    t0 = time.perf_counter()
-    a = columna(xp, df[origen]).astype(np.int64)
-    b = columna(xp, df[destino]).astype(np.int64)
-    e = a_entero(xp, columna(xp, df[etiqueta]), np.int64) if etiqueta else xp.zeros(a.shape[0], dtype=np.int64)
-    n = int(columna(xp, et_nodo).shape[0])
-    E = len(nombres_arista)
-    if a.shape[0] and (int(e.min()) < 0 or int(e.max()) >= E):
+def csr_simetrico(xp, a, b, e, n, E):
+    k = int(a.shape[0])
+    if k and (int(e.min()) < 0 or int(e.max()) >= E):
         raise ValueError(f"Etiquetas de arista fuera de [0, {E})")
-    if a.shape[0] and (int(xp.minimum(a, b).min()) < 0 or int(xp.maximum(a, b).max()) >= n):
+    if k and (min(int(a.min()), int(b.min())) < 0 or max(int(a.max()), int(b.max())) >= n):
         raise ValueError(f"IDs de vértice fuera de [0, {n})")
     bn, be = bits(n), bits(E)
     if 2 * bn + be > 63:
         raise ValueError("Demasiados vértices para empaquetar la clave de orden en 64 bits")
-    validas = a != b
-    lazos = int(a.shape[0] - int(xp.count_nonzero(validas)))
-    a, b, e = a[validas], b[validas], e[validas]
-    u, v = xp.minimum(a, b), xp.maximum(a, b)
-    del a, b
-    clave = (u << (bn + be)) | (v << be) | e
-    del u, v, e
+    s, mn, me = bn + be, (1 << bn) - 1, (1 << be) - 1
+    centinela = np.iinfo(np.int64).max
+    clave = xp.empty(k, dtype=np.int64)
+    for i in range(0, k, TAM_TROZO):
+        j = min(i + TAM_TROZO, k)
+        aa, bb = a[i:j].astype(np.int64), b[i:j].astype(np.int64)
+        c = (xp.minimum(aa, bb) << s) | (xp.maximum(aa, bb) << be) | e[i:j].astype(np.int64)
+        clave[i:j] = xp.where(aa == bb, centinela, c)
     clave.sort()
-    par = clave >> be
-    if clave.shape[0] > 1:
-        nueva = xp.concatenate([xp.ones(1, dtype=bool), par[1:] != par[:-1]])
-        repetidas = int(clave.shape[0] - int(xp.count_nonzero(nueva)))
+    validas = k - int(xp.count_nonzero(clave == centinela))
+    lazos = k - validas
+    clave = clave[:validas]
+    repetidas = 0
+    if validas > 1:
+        nueva = xp.empty(validas, dtype=bool)
+        nueva[0] = True
+        for i in range(1, validas, TAM_TROZO):
+            j = min(i + TAM_TROZO, validas)
+            nueva[i:j] = (clave[i:j] >> be) != (clave[i - 1:j - 1] >> be)
+        repetidas = validas - int(xp.count_nonzero(nueva))
         if repetidas:
             clave = clave[nueva]
-    else:
-        repetidas = 0
-    del par
+        del nueva
     m = int(clave.shape[0])
-    s, mn, me = bn + be, (1 << bn) - 1, (1 << be) - 1
     sim = xp.empty(2 * m, dtype=np.int64)
     for i in range(0, m, TAM_TROZO):
         j = min(i + TAM_TROZO, m)
-        k = clave[i:j]
-        uu, vv, ee = k >> s, (k >> be) & mn, k & me
+        c = clave[i:j]
+        uu, vv, ee = c >> s, (c >> be) & mn, c & me
         sim[i:j] = (uu << s) | (vv << be) | ee
         sim[m + i:m + j] = (vv << s) | (uu << be) | ee
     del clave
@@ -219,11 +216,24 @@ def desde_cudf(df, et_nodo, nombres_nodo, nombres_arista, origen="src", destino=
     ind = desempaquetar(xp, sim, be, mn)
     eta = desempaquetar(xp, sim, 0, me)
     del sim
+    return off, ind, eta, {"lazos_quitados": lazos, "repetidas_quitadas": repetidas, "aristas": m}
+
+
+def desde_cudf(df, et_nodo, nombres_nodo, nombres_arista, origen="src", destino="dst", etiqueta=None,
+               nombre="cudf", max_bloques=4096):
+    xp = modulo_arreglos()
+    sincronizar()
+    t0 = time.perf_counter()
+    a = columna(xp, df[origen])
+    b = columna(xp, df[destino])
+    e = a_entero(xp, columna(xp, df[etiqueta]), np.int32) if etiqueta else xp.zeros(a.shape[0], dtype=np.int32)
+    n = int(columna(xp, et_nodo).shape[0])
+    off, ind, eta, info = csr_simetrico(xp, a, b, e, n, len(nombres_arista))
+    del a, b, e
     sincronizar()
     t_construccion = time.perf_counter() - t0
     entrada = desde_arreglos(off, ind, et_nodo, eta, nombres_nodo, nombres_arista, nombre, max_bloques)
-    entrada["info"].update({"lazos_quitados": lazos, "repetidas_quitadas": repetidas, "aristas": m,
-                            "t_construccion_csr_s": t_construccion})
+    entrada["info"].update({**info, "t_construccion_csr_s": t_construccion})
     entrada["t_adaptador_s"] += t_construccion
     return entrada
 
@@ -256,9 +266,29 @@ def desde_cugraph(G, et_nodo, nombres_nodo, nombres_arista, nombre="cugraph", ma
     off, ind, val = vista_adyacencia(G)
     sincronizar()
     t_vista = time.perf_counter() - t0
+    xp = modulo_arreglos()
+    t0 = time.perf_counter()
+    n = int(columna(xp, et_nodo).shape[0])
+    o = columna(xp, off).astype(np.int64, copy=False)
+    nnz = int(a_host(o[-1:])[0])
+    if o.shape[0] - 1 < n:
+        o = xp.concatenate([o, xp.full(n + 1 - o.shape[0], nnz, dtype=np.int64)])
+    i = columna(xp, ind)
+    d_fila = gpu.fila_en_gpu({"offsets": a_numba(o)}, n, nnz, max_bloques=max_bloques)
+    fila = xp.asarray(d_fila) if xp is not np else d_fila.copy_to_host()
+    simetrica = int(xp.count_nonzero(i > fila)) == int(xp.count_nonzero(i < fila))
+    if not simetrica:
+        e = a_entero(xp, columna(xp, val), np.int32) if val is not None else xp.zeros(nnz, dtype=np.int32)
+        off, ind, val, info = csr_simetrico(xp, fila, i, e, n, len(nombres_arista))
+        del e
+    del fila, d_fila, o, i
+    sincronizar()
+    t_simetrizar = time.perf_counter() - t0
     entrada = desde_arreglos(off, ind, et_nodo, val, nombres_nodo, nombres_arista, nombre, max_bloques)
-    entrada["info"]["t_vista_s"] = t_vista
-    entrada["t_adaptador_s"] += t_vista
+    entrada["info"].update({"t_vista_s": t_vista, "simetrizado": not simetrica, "t_simetrizar_s": t_simetrizar})
+    if not simetrica:
+        entrada["info"].update(info)
+    entrada["t_adaptador_s"] += t_vista + t_simetrizar
     return entrada
 
 

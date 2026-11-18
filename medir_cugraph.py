@@ -13,7 +13,7 @@ import censo_3n as c3
 import censo_3n_ref as sec
 import censo_3n2a_gpu as gpu
 
-MODOS = ["host", "cudf", "cugraph"]
+MODOS = ["host", "cudf", "cugraph", "cugraph_dirigido"]
 CAMPOS = ("adaptador_s", "preproceso_cpu_s", "carga_s", "preproceso_gpu_s", "preparacion_s", "inducido_s", "censo_s",
           "extremo_s", "calculo_s")
 
@@ -82,7 +82,7 @@ def bloque_modo(calentamiento, corridas, ref):
             "adaptador": corridas[-1].get("adaptador"), **verificar(corridas, ref)}
 
 
-def tabla_aristas(csr):
+def tabla_aristas(csr, ambas=False):
     try:
         import cudf
     except ImportError:
@@ -90,7 +90,7 @@ def tabla_aristas(csr):
             raise
         import pandas as cudf
     fila = np.repeat(np.arange(csr.n, dtype=np.int32), np.diff(csr.offsets))
-    sup = fila < csr.indices
+    sup = np.ones(csr.nnz, dtype=bool) if ambas else fila < csr.indices
     datos = {"src": fila[sup], "dst": csr.indices[sup].astype(np.int32),
              "etiqueta": csr.et_arista[sup].astype(np.float32)}
     del fila, sup
@@ -255,10 +255,34 @@ def main():
         ad.liberar()
     del df
 
+    if "cugraph_dirigido" in a.modos:
+        try:
+            import cugraph
+            df2, _ = tabla_aristas(csr, ambas=True)
+            ad.sincronizar()
+            t0 = time.perf_counter()
+            G2 = cugraph.Graph(directed=True)
+            G2.from_cudf_edgelist(df2, source="src", destination="dst", edge_attr="etiqueta", renumber=False)
+            ad.sincronizar()
+            out["extra"]["construccion_cugraph_dirigido_s"] = time.perf_counter() - t0
+            del df2
+            ad.liberar()
+            cal, corr = medir(lambda: ad.censo3_residente(
+                ad.desde_cugraph(G2, et_nodo, csr.nombres_nodo, csr.nombres_arista, csr.nombre,
+                                 max_bloques=a.max_bloques), **kw), a.reps)
+            ref = ref or corr[-1]
+            out["modos"]["cugraph_dirigido"] = bloque_modo(cal, corr, ref)
+            imprimir("cugraph_dirigido", out["modos"]["cugraph_dirigido"])
+            del cal, corr, G2
+        except Exception as e:
+            out["modos"]["cugraph_dirigido"] = {"error": repr(e)}
+            print(f"[cugraph_dirigido] ERROR: {e!r}")
+        ad.liberar()
+
     modos = out["modos"]
     if "host" in modos and "tiempos" in modos["host"]:
         h = modos["host"]["tiempos"]
-        for nombre in ("cudf", "cugraph"):
+        for nombre in ("cudf", "cugraph", "cugraph_dirigido"):
             if nombre in modos and "tiempos" in modos[nombre]:
                 r = modos[nombre]["tiempos"]
                 out["extra"][f"comparacion_{nombre}"] = {
