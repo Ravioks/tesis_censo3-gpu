@@ -50,6 +50,10 @@ def cifras(res):
             a = b.get("adaptador") or {}
             m[p + clave + "Reordenado"] = "yes" if a.get("reordenado") else "no"
             m[p + clave + "Simetrizado"] = "yes" if a.get("simetrizado") else "no"
+            for k, nombre_k in (("t_simetrizar_s", "Simetrizar"), ("t_construccion_csr_s", "ConstruccionCsr"),
+                                ("t_conversion_s", "Conversion"), ("t_revision_s", "Revision")):
+                if a.get(k) is not None:
+                    m[p + clave + nombre_k] = ms(a[k])
         e = d.get("extra", {})
         if "construccion_cugraph_s" in e:
             m[p + "Construccion"] = ms(e["construccion_cugraph_s"])

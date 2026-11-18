@@ -125,8 +125,11 @@ def imprimir(nombre, b):
           f"exceso JIT {sec.seg(max(0.0, b['exceso_jit_s']))}")
     if b.get("adaptador"):
         a = b["adaptador"]
-        print(f"[{nombre}] adaptador: reordenado={a.get('reordenado')} sin_copia={a.get('sin_copia')} "
-              f"vista={a.get('t_vista_s')}")
+        partes = " ".join(f"{k[2:-2]}={sec.seg(a[k])}" for k in ("t_vista_s", "t_simetrizar_s", "t_construccion_csr_s",
+                                                                  "t_conversion_s", "t_revision_s", "t_resto_s")
+                          if a.get(k) is not None)
+        print(f"[{nombre}] adaptador: simetrizado={a.get('simetrizado')} reordenado={a.get('reordenado')} "
+              f"sin_copia={a.get('sin_copia')} | {partes}")
 
 
 def crear_parser():
@@ -236,9 +239,8 @@ def main():
         if G is not None and a.sin_etiquetas:
             try:
                 def sin_etiquetas():
-                    off, ind, _ = ad.vista_adyacencia(G)
-                    entrada = ad.desde_arreglos(off, ind, xp.zeros(csr.n, dtype=np.int32), None, ["-"], ["-"],
-                                                csr.nombre + "_sin_etiquetas", a.max_bloques)
+                    entrada = ad.desde_cugraph(G, xp.zeros(csr.n, dtype=np.int32), ["-"], ["-"],
+                                               csr.nombre + "_sin_etiquetas", a.max_bloques, etiquetas_arista=False)
                     return ad.censo3_residente(entrada, **kw)
                 cal, corr = medir(sin_etiquetas, a.reps)
                 b = {"tiempos": resumen(corr), "T": corr[-1]["T"], "W": corr[-1]["W"], "config": corr[-1]["config"],

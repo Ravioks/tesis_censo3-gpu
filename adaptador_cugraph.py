@@ -139,6 +139,9 @@ def desde_arreglos(offsets, indices, et_nodo, et_arista, nombres_nodo, nombres_a
             raise ValueError(f"Etiquetas de arista fuera de [0, {E})")
     if n and (int(etn.min()) < 0 or int(etn.max()) >= L):
         raise ValueError(f"Etiquetas de nodo fuera de [0, {L})")
+    sincronizar()
+    t_conversion = time.perf_counter() - t0
+    t1 = time.perf_counter()
 
     d_off = a_numba(off)
     d_fila = gpu.fila_en_gpu({"offsets": d_off}, n, nnz, max_bloques=max_bloques)
@@ -156,6 +159,8 @@ def desde_arreglos(offsets, indices, et_nodo, et_arista, nombres_nodo, nombres_a
         rev["repetidas"] = rev_final["repetidas"]
     if rev["repetidas"]:
         raise ValueError(f"El grafo tiene {rev['repetidas']:,} aristas repetidas; el censo supone un grafo simple")
+    sincronizar()
+    t_revision = time.perf_counter() - t1
 
     off_host = a_host(off)
     sin_copia = {"offsets": puntero(off) == puntero(off_in), "indices": puntero(ind) == puntero(ind_in),
@@ -166,7 +171,9 @@ def desde_arreglos(offsets, indices, et_nodo, et_arista, nombres_nodo, nombres_a
     t = time.perf_counter() - t0
     csr = gpu.CSR(off_host, None, None, None, list(nombres_nodo), list(nombres_arista), nombre)
     return {"csr": csr, "disp": disp, "fila": d_fila, "vivos": [off, ind, etn, eta, fila],
-            "info": {"n": n, "nnz": nnz, "reordenado": ordenado, "sin_copia": sin_copia, **rev},
+            "info": {"n": n, "nnz": nnz, "reordenado": ordenado, "sin_copia": sin_copia, **rev,
+                     "t_conversion_s": t_conversion, "t_revision_s": t_revision,
+                     "t_resto_s": t - t_conversion - t_revision},
             "t_adaptador_s": t}
 
 
@@ -258,12 +265,15 @@ def renumerado(G):
     return False
 
 
-def desde_cugraph(G, et_nodo, nombres_nodo, nombres_arista, nombre="cugraph", max_bloques=4096):
+def desde_cugraph(G, et_nodo, nombres_nodo, nombres_arista, nombre="cugraph", max_bloques=4096,
+                  etiquetas_arista=True):
     if renumerado(G):
         raise ValueError("El grafo de cuGraph está renumerado: constrúyelo con renumber=False e IDs en [0, n)")
     sincronizar()
     t0 = time.perf_counter()
     off, ind, val = vista_adyacencia(G)
+    if not etiquetas_arista:
+        val = None
     sincronizar()
     t_vista = time.perf_counter() - t0
     xp = modulo_arreglos()
