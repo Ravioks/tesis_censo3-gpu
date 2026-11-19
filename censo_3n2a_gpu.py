@@ -645,6 +645,10 @@ def memoria_gpu():
 
 def liberar_gpu():
     gc.collect()
+    liberar_pendientes()
+
+
+def liberar_pendientes():
     try:
         cuda.current_context().deallocations.clear()
     except Exception:

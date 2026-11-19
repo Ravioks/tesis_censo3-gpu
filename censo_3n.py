@@ -123,13 +123,13 @@ def censo3(csr, pre=None, config=None, max_bloques=4096, trabajo_max=gpu.TRABAJO
     if propio:
         disp.pop("fila", None)
         disp.pop("acum", None)
-    gpu.liberar_gpu()
+    gpu.liberar_pendientes()
     rt = tri.ejecutar_triangulos_gpu(csr, prep, orient, cfg["estrategia_tri"], cfg["memoria_tri"], cfg["bloque_tri"],
                                      max_bloques, cfg["chunk_tri"], trabajo_max, et_nodo=disp["et_nodo"])
     info_orient = {"aristas_orientadas": orient["aristas"], "grado_salida_max": orient["grado_salida_max"]}
     if propio:
         del disp, orient, dispositivo
-    gpu.liberar_gpu()
+    gpu.liberar_pendientes()
 
     t0 = time.perf_counter()
     inducido = sec.censo_inducido(rc["censo"], sec.resta_desde_triangulos(rt["triangulos"]))
