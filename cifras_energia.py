@@ -78,8 +78,48 @@ def macros_razones(m, p, cpu, gpu, suf=""):
                 m[p + nombre + suf + s2] = veces(c[kc]["media"] / g[kg]["media"])
 
 
+def globales(res, m):
+    desv, dif, hz = [], [], []
+    for ds in res.values():
+        for clave, d in ds.items():
+            for modo, b in d["resumen"].items():
+                if clave == "base" and modo.startswith("gpu") and "ligero" in ds:
+                    continue
+                j = b["julios_por_corrida"]
+                if j["media"] > 0:
+                    desv.append(j["desv"] / j["media"])
+            for x in d["mediciones"]:
+                c = x.get("componentes", {})
+                if x.get("modo", "").startswith("gpu") and "watts_bucle" in c.get("gpu", {}) \
+                        and "watts_bucle" in c.get("gpu_lhm", {}):
+                    dif.append(abs(c["gpu_lhm"]["watts_bucle"] / c["gpu"]["watts_bucle"] - 1))
+            hz.append(d.get("medidores", {}).get("muestreadores", {}).get("cpu", {}).get("hz"))
+    hz = [h for h in hz if h]
+    if desv:
+        m["EnDesvRelMax"] = f"{100 * max(desv):.1f}\\,\\%"
+    if dif:
+        m["EnDifGpuLhmMax"] = f"{100 * max(dif):.1f}\\,\\%"
+    if hz:
+        m["EnHzLhm"] = f"{min(hz):.1f}\\,Hz"
+
+
+def cifras_perfil(ruta, m):
+    if not ruta or not os.path.exists(ruta):
+        return
+    with open(ruta, encoding="utf-8") as f:
+        p = json.load(f)
+    pre = MACROS.get(p["grafo"], "") + "En"
+    m[pre + "Gc"] = segundos(p["gc_collect_s"])
+    m[pre + "PerfilPared"] = segundos(p["normal"]["pared_s"])
+    m[pre + "PerfilParedSinGc"] = segundos(p["sin_gc"]["pared_s"])
+    m[pre + "PerfilFase"] = segundos(p["sin_gc"]["censo_s"])
+    m[pre + "PerfilFuera"] = f"{p['normal']['fuera_s'] * 1e3:.0f}\\,ms"
+    m[pre + "PerfilFueraSinGc"] = f"{p['sin_gc']['fuera_s'] * 1e3:.1f}\\,ms"
+
+
 def cifras(res):
     m = {}
+    globales(res, m)
     for nombre, ds in res.items():
         p = MACROS.get(nombre)
         if p is None or "base" not in ds:
@@ -102,9 +142,11 @@ def main():
     p = argparse.ArgumentParser(description="cifras_energia.tex a partir de resultados/v3_energia")
     p.add_argument("--resultados", default=os.path.join("resultados", "v3_energia"))
     p.add_argument("--salida", default=os.path.join("resultados", "v3_energia", "cifras_energia.tex"))
+    p.add_argument("--perfil", default=None, help="perfil_lj.json de perfil_llamada.py")
     a = p.parse_args()
     res = ultimo_por_grafo(a.resultados)
     m = cifras(res)
+    cifras_perfil(a.perfil, m)
     todos = [d for ds in res.values() for d in ds.values()]
     commits = sorted({d.get("commit") for d in todos if d.get("commit")})
     fuentes = sorted({json.dumps(d["medidores"]["descripcion"].get(c, {}).get("fuente")) for d in todos
