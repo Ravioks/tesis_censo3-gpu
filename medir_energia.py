@@ -46,6 +46,13 @@ def preparar_modo(modo, csr, cfg, a):
     return lambda: cpu.censo3_njit(csr, None, paralelo=paralelo, estrategia_caminos="combinatorio"), None
 
 
+def liberar_ligero():
+    try:
+        gpu.cuda.current_context().deallocations.clear()
+    except Exception:
+        pass
+
+
 def tiempo_corrida(modo, res):
     t = res["tiempos"]
     return t["censo_s"] if modo.endswith("_censo") else t["extremo_s"]
@@ -62,14 +69,20 @@ def medir_modo(modo, csr, cfg, ref, med, a, ronda):
     if not c3.censos_iguales(cal, ref):
         raise RuntimeError(f"{modo}: el censo de calentamiento no coincide con la referencia")
     gpu.cuda.synchronize()
-    t0 = med.marcar(clave + "_bucle0")
-    reps, tiempos = 0, []
-    while reps < a.reps_min or me.ahora() - t0 < a.duracion:
-        res = fn()
-        tiempos.append(tiempo_corrida(modo, res))
-        reps += 1
-    gpu.cuda.synchronize()
-    t1 = med.marcar(clave + "_bucle1")
+    original = gpu.liberar_gpu
+    if a.sin_gc and modo.startswith("gpu"):
+        gpu.liberar_gpu = liberar_ligero
+    try:
+        t0 = med.marcar(clave + "_bucle0")
+        reps, tiempos = 0, []
+        while reps < a.reps_min or me.ahora() - t0 < a.duracion:
+            res = fn()
+            tiempos.append(tiempo_corrida(modo, res))
+            reps += 1
+        gpu.cuda.synchronize()
+        t1 = med.marcar(clave + "_bucle1")
+    finally:
+        gpu.liberar_gpu = original
     iguales = c3.censos_iguales(res, ref)
     del vivo, fn, res
     gpu.liberar_gpu()
@@ -156,6 +169,8 @@ def crear_parser():
     p.add_argument("--url-lhm", default=None)
     p.add_argument("--sensor-cpu", default=None, help="Texto o SensorId del sensor de CPU en LibreHardwareMonitor")
     p.add_argument("--sensor-gpu", default=None)
+    p.add_argument("--sin-gc", action="store_true",
+                   help="En los modos GPU, el bucle medido no llama a gc.collect() entre corridas")
     p.add_argument("--salida", default="resultados/v3_energia")
     return p
 
@@ -202,11 +217,11 @@ def main():
         print(f"[{k}] {txt}")
     os.makedirs(a.salida, exist_ok=True)
     marca = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = os.path.join(a.salida, f"energia_{csr.nombre}_{marca}")
+    base = os.path.join(a.salida, f"energia_{csr.nombre}{'_singc' if a.sin_gc else ''}_{marca}")
     out = {"grafo": csr.nombre, "n": csr.n, "nnz": csr.nnz, "fecha": datetime.now().isoformat(timespec="seconds"),
            "commit": commit(), "config_gpu": c3.completar_memorias(cfg, gpu.preparar(csr)), "hilos_cpu": a.hilos,
            "parametros": {k: getattr(a, k) for k in ("rondas", "duracion", "reps_min", "reposo", "enfriamiento",
-                                                      "modos")},
+                                                      "modos", "sin_gc")},
            "medidores": med.info(), "t_inicio_monotonic": t_inicio, "mediciones": mediciones, "resumen": resumen,
            "razones": razones}
     with open(base + ".json", "w", encoding="utf-8") as f:

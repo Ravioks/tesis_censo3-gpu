@@ -82,3 +82,26 @@ def test_medidores_con_servidor_lhm_local():
     assert m.energia("cpu", "a", "b", ta, tb)["watts"] == pytest.approx(35.2)
     assert m.energia("gpu", "a", "b", ta, tb)["watts"] == pytest.approx(18.5)
     assert m.info()["descripcion"]["cpu"]["fuente"] == "lhm"
+
+
+def _resumen(j, t, jc):
+    e = lambda x: {"media": x, "desv": 0.0}
+    return {"rondas": 3, "julios_por_corrida": e(j), "julios_dinamicos_por_corrida": e(j / 2),
+            "julios_cpu_por_corrida": e(jc), "julios_gpu_por_corrida": e(j - jc), "watts_total_bucle": e(50.0),
+            "watts_cpu_bucle": e(20.0), "watts_gpu_bucle": e(30.0), "watts_total_reposo": e(28.0),
+            "tiempo_por_corrida_s": e(t)}
+
+
+def test_cifras_combina_base_y_ligero():
+    import cifras_energia as ce
+    base = {"grafo": "com-LiveJournal", "parametros": {"sin_gc": False}, "mediciones": [],
+            "resumen": {"gpu_censo": _resumen(20.0, 0.2, 5.0), "cpu6_censo": _resumen(200.0, 2.0, 160.0)}}
+    lig = {"grafo": "com-LiveJournal", "parametros": {"sin_gc": True}, "mediciones": [],
+           "resumen": {"gpu_censo": _resumen(10.0, 0.1, 2.0)}}
+    m = ce.cifras({"com-LiveJournal": {"base": base, "ligero": lig}})
+    assert m["LJEnRazonCenso"].startswith("10.0")
+    assert m["LJEnRazonCensoCpuSolo"].startswith("8.0")
+    assert m["LJEnRazonCensoLigero"].startswith("20.0")
+    assert m["LJEnRazonCensoLigeroTiempo"].startswith("20.0")
+    assert m["LJEnGpuCensoLigeroT"] == "100\\,ms"
+    assert "LJEnCpuSixCensoLigeroJ" not in m
